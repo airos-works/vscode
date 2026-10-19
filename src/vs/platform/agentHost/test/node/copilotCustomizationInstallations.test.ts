@@ -6,7 +6,6 @@
 import type { CopilotClient, InstallationConfirmationRequest, McpInstallationReview } from '@github/copilot-sdk';
 import assert from 'assert';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { URI } from '../../../../base/common/uri.js';
 import { mock } from '../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { McpServerType } from '../../../mcp/common/mcpPlatformTypes.js';
@@ -24,6 +23,35 @@ type McpInstallReview = Extract<McpInstallationReview, { readonly action: 'insta
 type McpEffectiveConfiguration = NonNullable<McpInstallReview['effectiveConfiguration']>;
 type CustomizationClient = Awaited<ReturnType<ConstructorParameters<typeof CopilotCustomizationInstallations>[0]>>;
 type GetSavedFeed = CopilotClient['rpc']['catalog']['getSavedFeed'];
+
+type PolicySessionFactory = ConstructorParameters<typeof CopilotCustomizationInstallations>[1];
+
+/**
+ * Records the hidden policy sessions a {@link CopilotCustomizationInstallations}
+ * creates and disposes.
+ */
+class TestPolicySessions {
+	readonly created: string[] = [];
+	readonly disposed: string[] = [];
+
+	readonly create: PolicySessionFactory = async (client, sessionId) => {
+		this.created.push(sessionId);
+		return {
+			client,
+			sessionId,
+			dispose: async () => { this.disposed.push(sessionId); },
+		};
+	};
+
+	/** The most recently created hidden policy session. */
+	get sessionId(): string {
+		const sessionId = this.created.at(-1);
+		if (!sessionId) {
+			throw new Error('No hidden policy session was created.');
+		}
+		return sessionId;
+	}
+}
 
 suite('CopilotCustomizationInstallations', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -49,7 +77,7 @@ suite('CopilotCustomizationInstallations', () => {
 					}(),
 				},
 			};
-			const service = store.add(new CopilotCustomizationInstallations(async () => client, () => undefined, async (client, sessionId) => {
+			const service = store.add(new CopilotCustomizationInstallations(async () => client, async (client, sessionId) => {
 				policySessions.push(sessionId);
 				return { client, sessionId, async dispose() { } };
 			}));
@@ -94,15 +122,14 @@ suite('CopilotCustomizationInstallations', () => {
 					],
 				};
 			});
-			const session = URI.parse('agent-host-copilotcli:///unmaterialized');
-			const result = await fixture.service.search(session, { query: '', feedId: 'feed_editorial', limit: 1 });
+			const result = await fixture.service.search({ query: '', feedId: 'feed_editorial', limit: 1 });
 			assert.ok(result.kind === 'page');
 			const item = result.items[0];
-			await assert.rejects(fixture.service.prepare(session, {
+			await assert.rejects(fixture.service.prepare({
 				identifier: item.identifier!, displayName: item.displayName, description: item.description ?? '',
 				mediaType: candidate.mediaType, itemUrl: item.itemUrl, selectionId: item.selectionId, installation: { kind: 'mcp' },
 			}), /Reached SDK installation planning/);
-			await fixture.service.search(session, { query: '', feedId: 'feed_another', limit: 1 });
+			await fixture.service.search({ query: '', feedId: 'feed_another', limit: 1 });
 			assert.deepStrictEqual({
 				items: result.items.map(item => [item.identifier, item.displayName, item.iconUrl, item.categories]),
 				feedIds: requests.map(request => request.feedId),
@@ -129,7 +156,7 @@ suite('CopilotCustomizationInstallations', () => {
 					runtimeProtocolVersion: 3, minimumSupportedProtocolVersion: 3,
 					supportedCapabilities: [], unsupportedCapabilities: ['catalog-feeds'],
 				} : { kind, message: 'Unavailable', reason: 'no-credential' });
-				assert.deepStrictEqual(await service.search(URI.parse('agent-host-copilotcli:///session'), { query: '', feedId: 'feed_editorial', limit: 30 }), {
+				assert.deepStrictEqual(await service.search({ query: '', feedId: 'feed_editorial', limit: 30 }), {
 					kind: 'unavailable', reason: kind === 'negotiation-refused' ? 'unsupported' : 'authentication',
 				});
 			});
@@ -137,7 +164,7 @@ suite('CopilotCustomizationInstallations', () => {
 
 		test('surfaces feed retrieval failures rather than returning an empty page', async () => {
 			const { service } = createFixture(async () => ({ kind: 'unavailable', reason: 'feed-not-found', message: 'Collection not found' }));
-			await assert.rejects(service.search(URI.parse('agent-host-copilotcli:///session'), { query: '', feedId: 'feed_missing', limit: 30 }), /Collection not found/);
+			await assert.rejects(service.search({ query: '', feedId: 'feed_missing', limit: 30 }), /Collection not found/);
 		});
 	});
 
@@ -207,6 +234,7 @@ suite('CopilotCustomizationInstallations', () => {
 		const searchRequests: Parameters<CopilotClient['rpc']['catalog']['search']>[0][] = [];
 		const decisions: string[] = [];
 		const serviceRef: { value?: CopilotCustomizationInstallations } = {};
+		const policySessions = new TestPolicySessions();
 		const plugins = new class extends mock<CopilotClient['rpc']['plugins']>() {
 			override readonly planInstall: CopilotClient['rpc']['plugins']['planInstall'] = async request => {
 				planRequests.push(request);
@@ -230,7 +258,7 @@ suite('CopilotCustomizationInstallations', () => {
 				const operationId = request.planHandle === 'plugin-plan-2' ? 'plugin-operation-2' : 'plugin-operation-1';
 				for (const review of [{ ...sdkReview, name: 'tampered' }, sdkReview]) {
 					decisions.push(await serviceRef.value!.confirmationHandler({
-						policySessionId: 'policy-session',
+						policySessionId: policySessions.sessionId,
 						confirmationId: `confirmation-${decisions.length}`,
 						operationId,
 						expiresAt,
@@ -282,10 +310,10 @@ suite('CopilotCustomizationInstallations', () => {
 				mcp: new class extends mock<CopilotClient['rpc']['mcp']>() { }(),
 			},
 		};
-		const service = store.add(new CopilotCustomizationInstallations(async () => client, () => 'policy-session'));
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
 		serviceRef.value = service;
 
-		const search = await service.search(URI.parse('agent-host-copilotcli:///session'), { query: '', feedId: 'feed_editorial', limit: 10 });
+		const search = await service.search({ query: '', feedId: 'feed_editorial', limit: 10 });
 		assert.strictEqual(search.kind, 'page');
 		const item = search.kind === 'page' ? search.items[0] : undefined;
 		assert.ok(item);
@@ -298,8 +326,8 @@ suite('CopilotCustomizationInstallations', () => {
 			selectionId: item.selectionId,
 			installation: { kind: 'plugin' },
 		} as const;
-		await service.prepare(URI.parse('agent-host-copilotcli:///session'), request);
-		const review = await service.prepare(URI.parse('agent-host-copilotcli:///session'), request);
+		await service.prepare(request);
+		const review = await service.prepare(request);
 		const applyResult = await service.apply(review.operationId);
 
 		assert.deepStrictEqual({
@@ -359,14 +387,14 @@ suite('CopilotCustomizationInstallations', () => {
 					requiredCapabilities: ['catalog-search-credential-required', 'catalog-search-session-bound', 'catalog-selection', 'agent-plugin-discovery', 'agent-plugin-confirmed-installation'],
 				},
 				candidateHandle: candidate.handle,
-				policySessionId: 'policy-session',
+				policySessionId: policySessions.sessionId,
 			}, {
 				contract: {
 					protocolVersion: 3,
 					requiredCapabilities: ['catalog-search-credential-required', 'catalog-search-session-bound', 'catalog-selection', 'agent-plugin-discovery', 'agent-plugin-confirmed-installation'],
 				},
 				candidateHandle: 'refreshed-plugin-candidate',
-				policySessionId: 'policy-session',
+				policySessionId: policySessions.sessionId,
 			}],
 			applyRequests: [{
 				contract: {
@@ -374,33 +402,29 @@ suite('CopilotCustomizationInstallations', () => {
 					requiredCapabilities: ['catalog-search-credential-required', 'catalog-search-session-bound', 'catalog-selection', 'agent-plugin-discovery', 'agent-plugin-confirmed-installation'],
 				},
 				planHandle: 'plugin-plan-2',
-				policySessionId: 'policy-session',
+				policySessionId: policySessions.sessionId,
 			}],
 			searchRequests: [{ query: candidate.identity, kinds: ['plugin'] }],
 			decisions: ['cancel', 'confirm'],
 		});
 	});
 
-	test('fails before starting the SDK when no policy-session factory is available', async () => {
+	test('answers a non-plugin queryless browse without starting the SDK', async () => {
 		let clientRequests = 0;
+		const policySessions = new TestPolicySessions();
 		const service = store.add(new CopilotCustomizationInstallations(async () => {
 			clientRequests++;
 			throw new Error('Unexpected client request');
-		}, () => undefined));
+		}, policySessions.create));
 
-		const search = await service.search(URI.parse('agent-host-copilotcli:///unmaterialized'), {
-			query: 'demo',
-			limit: 10,
-		});
-		const mcpBrowse = await service.search(URI.parse('agent-host-copilotcli:///unmaterialized'), {
+		const mcpBrowse = await service.search({
 			query: '',
 			mediaType: 'application/mcp-server+json',
 			limit: 10,
 		});
-		await assert.rejects(service.list(URI.parse('agent-host-copilotcli:///unmaterialized')), /Start a Copilot agent session/);
-		assert.deepStrictEqual({ clientRequests, search, mcpBrowse }, {
+		assert.deepStrictEqual({ clientRequests, created: policySessions.created, mcpBrowse }, {
 			clientRequests: 0,
-			search: { kind: 'unavailable', reason: 'session' },
+			created: [],
 			mcpBrowse: { kind: 'page', items: [] },
 		});
 	});
@@ -438,15 +462,17 @@ suite('CopilotCustomizationInstallations', () => {
 				mcp: new class extends mock<CopilotClient['rpc']['mcp']>() { }(),
 			},
 		};
+		const policySessions = new TestPolicySessions();
 		const service = store.add(new CopilotCustomizationInstallations(
 			async () => client,
-			() => undefined,
+			policySessions.create,
 		));
 
-		const result = await service.search(URI.parse('agent-host-copilotcli:///unmaterialized'), { query: '', limit: 10 });
+		const result = await service.search({ query: '', limit: 10 });
 
-		assert.deepStrictEqual({ calls, result }, {
+		assert.deepStrictEqual({ calls, createdPolicySessions: policySessions.created, result }, {
 			calls: ['list'],
+			createdPolicySessions: [],
 			result: {
 				kind: 'page',
 				items: [
@@ -488,7 +514,7 @@ suite('CopilotCustomizationInstallations', () => {
 		});
 	});
 
-	test('creates and reuses a hidden policy session when no chat is materialized', async () => {
+	test('creates and reuses a hidden policy session', async () => {
 		const policySessionIds: (string | undefined)[] = [];
 		const catalog = new class extends mock<CopilotClient['rpc']['catalog']>() {
 			override readonly search: CopilotClient['rpc']['catalog']['search'] = async request => {
@@ -513,7 +539,6 @@ suite('CopilotCustomizationInstallations', () => {
 		let disposed = 0;
 		const service = store.add(new CopilotCustomizationInstallations(
 			async () => client,
-			() => undefined,
 			async (requestedClient, sessionId) => {
 				created++;
 				return {
@@ -525,10 +550,10 @@ suite('CopilotCustomizationInstallations', () => {
 		));
 
 		assert.strictEqual(service.releasePolicySession(client), undefined);
-		await service.search(URI.parse('agent-host-copilotcli:///unmaterialized'), { query: 'first', limit: 10 });
-		await service.search(URI.parse('agent-host-copilotcli:///unmaterialized'), { query: 'second', limit: 10 });
+		await service.search({ query: 'first', limit: 10 });
+		await service.search({ query: 'second', limit: 10 });
 		await service.releasePolicySession(client);
-		await service.search(URI.parse('agent-host-copilotcli:///unmaterialized'), { query: 'third', limit: 10 });
+		await service.search({ query: 'third', limit: 10 });
 		await service.releasePolicySession(client);
 
 		assert.deepStrictEqual({
@@ -546,6 +571,166 @@ suite('CopilotCustomizationInstallations', () => {
 		});
 	});
 
+	test('binds search, inventory, recovery, and installation planning to the hidden policy session', async () => {
+		const negotiated = { runtimeProtocolVersion: 3, grantedCapabilities: [] };
+		const requests: string[] = [];
+		const record = (operation: string, policySessionId: string | undefined) => requests.push(`${operation}:${policySessionId}`);
+		const client = {
+			rpc: {
+				catalog: new class extends mock<CopilotClient['rpc']['catalog']>() {
+					override readonly search: CopilotClient['rpc']['catalog']['search'] = async request => {
+						record('catalog.search', request.policySessionId);
+						return { kind: 'succeeded' as const, searchId: 'search', candidates: [], truncated: false, negotiated };
+					};
+				}(),
+				skills: new class extends mock<CopilotClient['rpc']['skills']>() {
+					override readonly installations = new class extends mock<CopilotClient['rpc']['skills']['installations']>() {
+						override readonly list: CopilotClient['rpc']['skills']['installations']['list'] = async request => {
+							record('skills.list', request.policySessionId);
+							return { kind: 'outcome' as const, negotiated, outcome: { kind: 'listed' as const, installations: [] } };
+						};
+						override readonly recover: CopilotClient['rpc']['skills']['installations']['recover'] = async request => {
+							record('skills.recover', request.policySessionId);
+							return { kind: 'outcome' as const, negotiated, outcome: { kind: 'recovered' as const, installations: [] } };
+						};
+					}();
+				}(),
+				mcp: new class extends mock<CopilotClient['rpc']['mcp']>() {
+					override readonly installations = new class extends mock<CopilotClient['rpc']['mcp']['installations']>() {
+						override readonly list: CopilotClient['rpc']['mcp']['installations']['list'] = async request => {
+							record('mcp.list', request.policySessionId);
+							return { kind: 'outcome' as const, negotiated, outcome: { kind: 'listed' as const, installations: [] } };
+						};
+						override readonly recover: CopilotClient['rpc']['mcp']['installations']['recover'] = async request => {
+							record('mcp.recover', request.policySessionId);
+							return { kind: 'outcome' as const, negotiated, outcome: { kind: 'recovered' as const, installations: [] } };
+						};
+					}();
+					override readonly config = new class extends mock<CopilotClient['rpc']['mcp']['config']>() {
+						override readonly list: CopilotClient['rpc']['mcp']['config']['list'] = async () => ({ servers: {} });
+					}();
+				}(),
+			},
+		};
+		const policySessions = new TestPolicySessions();
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
+
+		await service.list();
+		await service.recover();
+		await service.search({ query: 'demo', limit: 10 });
+		const uninstall = await service.prepare({ installationId: 'missing' }).then(() => undefined, error => error instanceof Error ? error.message : String(error));
+		await service.releasePolicySession(client);
+
+		const hidden = policySessions.created[0];
+		assert.deepStrictEqual({ created: policySessions.created.length, disposed: policySessions.disposed, requests, uninstall }, {
+			created: 1,
+			disposed: [hidden],
+			requests: [
+				`skills.list:${hidden}`,
+				`mcp.list:${hidden}`,
+				`skills.recover:${hidden}`,
+				`mcp.recover:${hidden}`,
+				`catalog.search:${hidden}`,
+				`skills.list:${hidden}`,
+				`mcp.list:${hidden}`,
+			],
+			uninstall: 'The SDK no longer owns this customization installation.',
+		});
+	});
+
+	test('rejects a pending SDK review after its hidden policy session is replaced', async () => {
+		const expiresAt = new Date(Date.now() + 60_000).toISOString();
+		const negotiated = { runtimeProtocolVersion: 3, grantedCapabilities: [] };
+		const catalogue = { resourceId: 'urn:air:github.test:skill:demo', displayName: 'Demo Skill', source: 'https://agentfinder.github.com' };
+		const installation = {
+			installationId: 'skill-installation',
+			operationId: 'skill-operation',
+			name: 'demo-skill',
+			target: { scope: 'personal' as const, relativePath: 'skills/demo', displayLabel: '~/.copilot/skills/demo' },
+			configuredEnabled: false,
+			sessionState: 'loaded-disabled' as const,
+			source: {
+				resourceId: catalogue.resourceId,
+				catalogRevisionId: 'catalog-revision',
+				repositoryId: 'repository-id',
+				repository: 'owner/repository',
+				revision: 'a'.repeat(40),
+				root: 'skills/demo',
+				descriptorDigest: 'b'.repeat(64),
+				bundleDigest: 'c'.repeat(64),
+			},
+			catalogue,
+			installedAt: new Date().toISOString(),
+			ownershipState: 'intact' as const,
+		};
+		const applies: string[] = [];
+		const client = {
+			rpc: {
+				catalog: new class extends mock<CopilotClient['rpc']['catalog']>() { }(),
+				skills: new class extends mock<CopilotClient['rpc']['skills']>() {
+					override readonly installations = new class extends mock<CopilotClient['rpc']['skills']['installations']>() {
+						override readonly list: CopilotClient['rpc']['skills']['installations']['list'] = async () => ({
+							kind: 'outcome' as const,
+							negotiated,
+							outcome: { kind: 'listed' as const, installations: [installation] },
+						});
+					}();
+					override readonly planUninstall: CopilotClient['rpc']['skills']['planUninstall'] = async () => ({
+						kind: 'outcome' as const,
+						negotiated,
+						outcome: {
+							kind: 'uninstall-planned' as const,
+							plan: {
+								planHandle: 'skill-plan',
+								operationId: 'skill-uninstall',
+								expiresAt,
+								installation,
+								review: { action: 'uninstall' as const, installation, filesModified: false, files: [], totalBytes: 0, catalogue },
+							},
+						},
+					});
+					override readonly applyUninstall: CopilotClient['rpc']['skills']['applyUninstall'] = async request => {
+						applies.push(`skills.applyUninstall:${request.policySessionId}`);
+						throw new Error('Applied a plan bound to a deleted policy session');
+					};
+				}(),
+				mcp: new class extends mock<CopilotClient['rpc']['mcp']>() {
+					override readonly installations = new class extends mock<CopilotClient['rpc']['mcp']['installations']>() {
+						override readonly list: CopilotClient['rpc']['mcp']['installations']['list'] = async () => ({
+							kind: 'outcome' as const,
+							negotiated,
+							outcome: { kind: 'listed' as const, installations: [] },
+						});
+					}();
+					override readonly config = new class extends mock<CopilotClient['rpc']['mcp']['config']>() {
+						override readonly list: CopilotClient['rpc']['mcp']['config']['list'] = async () => ({
+							servers: { demo: { type: 'http' as const, url: 'https://example.test/mcp', tools: ['*'] } },
+						});
+						override readonly remove: CopilotClient['rpc']['mcp']['config']['remove'] = async request => {
+							applies.push(`mcp.config.remove:${request.name}`);
+						};
+					}();
+				}(),
+			},
+		};
+		const policySessions = new TestPolicySessions();
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
+		const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+		const sdkReview = await service.prepare({ installationId: installation.installationId });
+		const configurationReview = await service.prepare({ installationId: 'mcp-config:demo' });
+		await service.releasePolicySession(client);
+		const sdkApply = await service.apply(sdkReview.operationId).then(() => undefined, message);
+		const sdkRetry = await service.apply(sdkReview.operationId).then(() => undefined, message);
+		await service.apply(configurationReview.operationId);
+
+		assert.deepStrictEqual({ sdkApply, sdkRetry, applies }, {
+			sdkApply: 'The customization runtime restarted. Start the operation again.',
+			sdkRetry: 'This customization installation review expired. Start the operation again.',
+			applies: ['mcp.config.remove:demo'],
+		});
+	});
+
 	test('adds a raw MCP configuration through the SDK', async () => {
 		const requests: Parameters<CopilotClient['rpc']['mcp']['config']['add']>[0][] = [];
 		const client = {
@@ -559,7 +744,7 @@ suite('CopilotCustomizationInstallations', () => {
 				}(),
 			},
 		};
-		const service = store.add(new CopilotCustomizationInstallations(async () => client, () => undefined));
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, new TestPolicySessions().create));
 
 		await service.addMcpServerConfiguration('demo', {
 			type: McpServerType.LOCAL,
@@ -661,12 +846,13 @@ suite('CopilotCustomizationInstallations', () => {
 				mcp: new class extends mock<CopilotClient['rpc']['mcp']>() { }(),
 			},
 		};
+		const policySessions = new TestPolicySessions();
 		const service = store.add(new CopilotCustomizationInstallations(
 			async () => client,
-			() => 'policy-session',
+			policySessions.create,
 		));
 
-		const result = await service.search(URI.parse('agent-host-copilotcli:///session'), { query: 'demo', limit: 10 });
+		const result = await service.search({ query: 'demo', limit: 10 });
 
 		assert.deepStrictEqual(result.kind === 'page' ? {
 			items: result.items.map(item => ({ kind: item.kind, displayName: item.displayName, itemUrl: item.itemUrl, installable: item.installable })),
@@ -738,9 +924,10 @@ suite('CopilotCustomizationInstallations', () => {
 				mcp: new class extends mock<CopilotClient['rpc']['mcp']>() { }(),
 			},
 		};
-		const service = store.add(new CopilotCustomizationInstallations(async () => client, () => 'policy-session'));
+		const policySessions = new TestPolicySessions();
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
 
-		const result = await service.search(URI.parse('agent-host-copilotcli:///session'), { query: 'azure', limit: 10 });
+		const result = await service.search({ query: 'azure', limit: 10 });
 
 		assert.deepStrictEqual({
 			requestPages,
@@ -810,13 +997,14 @@ suite('CopilotCustomizationInstallations', () => {
 				mcp: new class extends mock<CopilotClient['rpc']['mcp']>() { }(),
 			},
 		};
-		const service = store.add(new CopilotCustomizationInstallations(async () => client, () => 'sdk-session'));
+		const policySessions = new TestPolicySessions();
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
 
-		const first = await service.search(URI.parse('agent-host-copilotcli:///session'), { query: 'demo', limit: 10 });
+		const first = await service.search({ query: 'demo', limit: 10 });
 		if (first.kind !== 'page' || !first.nextCursor) {
 			assert.fail('Expected a paged SDK catalog result.');
 		}
-		const second = await service.search(URI.parse('agent-host-copilotcli:///session'), { query: 'ignored', limit: 1, cursor: first.nextCursor });
+		const second = await service.search({ query: 'ignored', limit: 1, cursor: first.nextCursor });
 
 		assert.deepStrictEqual({
 			publicCursorIsPrivateToken: first.nextCursor === 'private-sdk-token',
@@ -841,7 +1029,7 @@ suite('CopilotCustomizationInstallations', () => {
 						'agent-plugin-confirmed-installation',
 					],
 				},
-				policySessionId: 'sdk-session',
+				policySessionId: policySessions.sessionId,
 				query: 'demo',
 				limit: 10,
 				kinds: ['ai-skill', 'mcp-server', 'plugin'],
@@ -959,12 +1147,13 @@ suite('CopilotCustomizationInstallations', () => {
 		};
 		const negotiated = { runtimeProtocolVersion: 3, grantedCapabilities: [] };
 		const serviceRef: { value?: CopilotCustomizationInstallations } = {};
+		const policySessions = new TestPolicySessions();
 		const decisions: string[] = [];
 		const uninstallDecisions: string[] = [];
 		const searchCapabilities: string[][] = [];
 		let installed = false;
 		const confirmation = (id: string, effectiveConfiguration: McpEffectiveConfiguration): InstallationConfirmationRequest => ({
-			policySessionId: 'policy-session',
+			policySessionId: policySessions.sessionId,
 			confirmationId: id,
 			operationId: 'operation-id',
 			expiresAt,
@@ -1034,7 +1223,7 @@ suite('CopilotCustomizationInstallations', () => {
 			});
 			override readonly applyUninstall: CopilotClient['rpc']['mcp']['applyUninstall'] = async () => {
 				const request: InstallationConfirmationRequest = {
-					policySessionId: 'policy-session',
+					policySessionId: policySessions.sessionId,
 					confirmationId: 'uninstall-confirmation',
 					operationId: 'uninstall-operation',
 					expiresAt,
@@ -1104,10 +1293,10 @@ suite('CopilotCustomizationInstallations', () => {
 				mcp,
 			},
 		};
-		const service = store.add(new CopilotCustomizationInstallations(async () => client, () => 'policy-session'));
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
 		serviceRef.value = service;
 
-		const review = await service.prepare(URI.parse('agent-host-copilotcli:///session'), {
+		const review = await service.prepare({
 			mediaType: candidate.mediaType,
 			identifier: itemUrl,
 			displayName: candidate.displayName,
@@ -1117,7 +1306,7 @@ suite('CopilotCustomizationInstallations', () => {
 			installation: { kind: 'mcp' },
 		});
 		await service.apply(review.operationId);
-		const uninstallReview = await service.prepare(URI.parse('agent-host-copilotcli:///session'), {
+		const uninstallReview = await service.prepare({
 			installationId: installation.installationId,
 		});
 		await service.apply(uninstallReview.operationId);
@@ -1183,9 +1372,10 @@ suite('CopilotCustomizationInstallations', () => {
 				}(),
 			},
 		};
-		const service = store.add(new CopilotCustomizationInstallations(async () => client, () => 'policy-session'));
+		const policySessions = new TestPolicySessions();
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
 
-		await assert.rejects(service.prepare(URI.parse('agent-host-copilotcli:///session'), {
+		await assert.rejects(service.prepare({
 			mediaType: 'application/mcp-server+json',
 			identifier: 'default:io.example/demo',
 			displayName: 'Demo MCP',
@@ -1301,9 +1491,10 @@ suite('CopilotCustomizationInstallations', () => {
 				}(),
 			},
 		};
-		const service = store.add(new CopilotCustomizationInstallations(async () => client, () => 'policy-session'));
+		const policySessions = new TestPolicySessions();
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
 
-		const review = await service.prepare(URI.parse('agent-host-copilotcli:///session'), {
+		const review = await service.prepare({
 			mediaType: 'application/mcp-server+json',
 			identifier: 'default:io.example/demo',
 			displayName: 'Demo MCP',
@@ -1315,10 +1506,10 @@ suite('CopilotCustomizationInstallations', () => {
 			},
 		});
 		await service.apply(review.operationId);
-		const inventory = await service.list(URI.parse('agent-host-copilotcli:///session'));
-		const uninstallReview = await service.prepare(URI.parse('agent-host-copilotcli:///session'), { installationId: inventory[0].installationId });
+		const inventory = await service.list();
+		const uninstallReview = await service.prepare({ installationId: inventory[0].installationId });
 		await service.apply(uninstallReview.operationId);
-		const finalInventory = await service.list(URI.parse('agent-host-copilotcli:///session'));
+		const finalInventory = await service.list();
 
 		assert.deepStrictEqual({ prepared, review, added, inventory, uninstallReview, removed, finalInventory }, {
 			prepared: 0,
@@ -1413,6 +1604,7 @@ suite('CopilotCustomizationInstallations', () => {
 		};
 		const negotiated = { runtimeProtocolVersion: 3, grantedCapabilities: [] };
 		const serviceRef: { value?: CopilotCustomizationInstallations } = {};
+		const policySessions = new TestPolicySessions();
 		const decisions: string[] = [];
 		const skills = new class extends mock<CopilotClient['rpc']['skills']>() {
 			override readonly installations = new class extends mock<CopilotClient['rpc']['skills']['installations']>() {
@@ -1440,7 +1632,7 @@ suite('CopilotCustomizationInstallations', () => {
 			};
 			override readonly applyInstall: CopilotClient['rpc']['skills']['applyInstall'] = async () => {
 				const request: InstallationConfirmationRequest = {
-					policySessionId: 'sdk-session',
+					policySessionId: policySessions.sessionId,
 					confirmationId: 'confirmation',
 					operationId: 'skill-operation',
 					expiresAt,
@@ -1495,17 +1687,17 @@ suite('CopilotCustomizationInstallations', () => {
 			};
 		}();
 		const client = { rpc: { catalog, skills, mcp } };
-		const service = store.add(new CopilotCustomizationInstallations(async () => client, () => 'sdk-session'));
+		const service = store.add(new CopilotCustomizationInstallations(async () => client, policySessions.create));
 		serviceRef.value = service;
 
-		const inventory = await service.list(URI.parse('agent-host-copilotcli:///session'));
-		const firstSearch = await service.search(URI.parse('agent-host-copilotcli:///session'), {
+		const inventory = await service.list();
+		const firstSearch = await service.search({
 			query: 'demo',
 			mediaType: 'application/ai-skill',
 			limit: 10,
 		});
 		assert.strictEqual(firstSearch.kind, 'page');
-		const versionMismatch = await service.prepare(URI.parse('agent-host-copilotcli:///session'), {
+		const versionMismatch = await service.prepare({
 			mediaType: 'application/ai-skill',
 			identifier: catalogue.resourceId,
 			displayName: catalogue.displayName,
@@ -1514,7 +1706,7 @@ suite('CopilotCustomizationInstallations', () => {
 			selectionId: firstSearch.kind === 'page' ? firstSearch.items[0].selectionId : undefined,
 			installation: { kind: 'skill' },
 		}).then(() => undefined, error => error instanceof Error ? error.message : String(error));
-		const review = await service.prepare(URI.parse('agent-host-copilotcli:///session'), {
+		const review = await service.prepare({
 			mediaType: 'application/ai-skill',
 			identifier: catalogue.resourceId,
 			displayName: catalogue.displayName,
@@ -1525,7 +1717,7 @@ suite('CopilotCustomizationInstallations', () => {
 			installation: { kind: 'skill' },
 		});
 		const prematureDecision = await service.confirmationHandler({
-			policySessionId: 'sdk-session',
+			policySessionId: policySessions.sessionId,
 			confirmationId: 'premature',
 			operationId: 'skill-operation',
 			expiresAt,
@@ -1610,7 +1802,8 @@ suite('CopilotCustomizationInstallations', () => {
 				}();
 			}();
 			const catalog = new class extends mock<CopilotClient['rpc']['catalog']>() { }();
-			const service = store.add(new CopilotCustomizationInstallations(async () => ({ rpc: { catalog, skills, mcp } }), () => 'sdk-session'));
+			const policySessions = new TestPolicySessions();
+			const service = store.add(new CopilotCustomizationInstallations(async () => ({ rpc: { catalog, skills, mcp } }), policySessions.create));
 			return { service, calls };
 		}
 
@@ -1618,7 +1811,7 @@ suite('CopilotCustomizationInstallations', () => {
 			const refused: McpInstallationManagementResult = { kind: 'outcome', negotiated, outcome: { kind: 'refused', reason: 'lifecycle-unavailable' } };
 			const { service, calls } = createService({ list: refused, recover: refused });
 
-			const error = await service.list(URI.parse('agent-host-copilotcli:///session')).then(() => undefined, error => error instanceof Error ? error.message : String(error));
+			const error = await service.list().then(() => undefined, error => error instanceof Error ? error.message : String(error));
 
 			assert.deepStrictEqual({ error, calls: calls.sort() }, {
 				error: 'The SDK could not list installed MCP servers. (refused: lifecycle-unavailable)',
@@ -1640,7 +1833,7 @@ suite('CopilotCustomizationInstallations', () => {
 				recover: { kind: 'outcome', negotiated, outcome: { kind: 'recovered', installations: [installation] } },
 			});
 
-			const inventory = await service.list(URI.parse('agent-host-copilotcli:///session'));
+			const inventory = await service.list();
 
 			assert.deepStrictEqual({ inventory, calls: calls.sort() }, {
 				inventory: [{
@@ -1659,7 +1852,7 @@ suite('CopilotCustomizationInstallations', () => {
 			const recoveryRequired: McpInstallationManagementResult = { kind: 'outcome', negotiated, outcome: { kind: 'recovery-required' } };
 			const { service, calls } = createService({ list: recoveryRequired, recover: recoveryRequired });
 
-			const error = await service.list(URI.parse('agent-host-copilotcli:///session')).then(() => undefined, error => error instanceof Error ? error.message : String(error));
+			const error = await service.list().then(() => undefined, error => error instanceof Error ? error.message : String(error));
 
 			assert.deepStrictEqual({ error, calls: calls.sort() }, {
 				error: 'The SDK could not list installed MCP servers. (recovery-required)',
