@@ -1431,7 +1431,12 @@ export class AICustomizationDiscoveryPage extends Disposable implements IAICusto
 		if (this.curatedSourceError && !sourceErrors.some(error => error.sourceId === this.curatedSourceError?.sourceId)) {
 			sourceErrors.push(this.curatedSourceError);
 		}
-		this.sourceWarnings.update(sourceErrors, this.loading);
+		this.sourceWarnings.update(
+			sourceErrors,
+			this.loading,
+			this.loaded && !this.loading,
+			this.isCatalogEnabled() && !this.query.installed ? this.getCurrentQuerySources().map(source => source.id) : [],
+		);
 		const catalogPending = this.isCatalogPending();
 		const showProgress = this.visible && catalogPending && !this.isLoadingMore();
 		if (showProgress !== this.progressBarActive) {
@@ -1566,9 +1571,9 @@ export class AICustomizationDiscoveryPage extends Disposable implements IAICusto
 				this.focus();
 				void this.loadCatalog(this.loadingMore);
 			}));
-		} else if (entries.length === 0 && this.sourceWarnings.hasWarnings) {
-			this.resultStatus.textContent = localize('customizationDiscovery.sourcesUnavailable', "Available customizations could not be fully loaded. Retry an unavailable source.");
-		} else if (entries.length === 0 && !this.sourceWarnings.hasErrors) {
+		} else if (entries.length === 0 && this.sourceWarnings.hasFailures) {
+			this.resultStatus.textContent = '';
+		} else if (entries.length === 0 && !this.sourceWarnings.hasInlinePrompts) {
 			this.resultStatus.textContent = this.filteredBackfillLimitReached
 				? localize('customizationDiscovery.moreResultsPossible', "More catalog results may match this search.")
 				: localize('customizationDiscovery.noResults', "No customizations match this search.");
@@ -1651,16 +1656,16 @@ export class AICustomizationDiscoveryPage extends Disposable implements IAICusto
 			const retry = this.browseDisposables.add(new Button(this.browseStatus, { ...defaultButtonStyles, secondary: true, small: true }));
 			retry.label = localize('customizationDiscovery.retry', "Retry");
 			this.browseDisposables.add(retry.onDidClick(() => void this.loadCatalog(false)));
-		} else if (!this.catalogItems.length && !curatedSections?.length && this.loaded && this.sourceWarnings.hasWarnings) {
-			this.browseStatus.textContent = localize('customizationDiscovery.sourcesUnavailable', "Available customizations could not be fully loaded. Retry an unavailable source.");
-		} else if (!this.catalogItems.length && !curatedSections?.length && this.loaded && !this.sourceWarnings.hasErrors) {
+		} else if (!this.catalogItems.length && !curatedSections?.length && this.loaded && this.sourceWarnings.hasFailures) {
+			this.browseStatus.textContent = '';
+		} else if (!this.catalogItems.length && !curatedSections?.length && this.loaded && !this.sourceWarnings.hasInlinePrompts) {
 			this.browseStatus.textContent = localize('customizationDiscovery.emptyCatalog', "No catalog customizations are available.");
 		} else if (this.errorMessage) {
 			this.browseStatus.textContent = localize('customizationDiscovery.additionalItemsError', "Some additional customizations could not be loaded. {0}", this.errorMessage);
 		} else {
 			this.browseStatus.textContent = this.installErrors.values().next().value ?? '';
 		}
-		if (!this.loading && this.sourceWarnings.hasErrors) {
+		if (!this.loading && this.sourceWarnings.hasInlinePrompts) {
 			this.announce(this.sourceWarnings.getAccessibilityContent());
 		}
 	}
