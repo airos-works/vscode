@@ -10,6 +10,7 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Lazy } from '../../../../../base/common/lazy.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
+import { compareIgnoreCase } from '../../../../../base/common/strings.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -35,6 +36,10 @@ export function getProviderMarketplaceSourceId(name: string): string {
 interface IAgentFinderBrowseFeed {
 	readonly id: string;
 	readonly title: string;
+}
+
+function sortMarketplaceSources(sources: readonly ICustomizationMarketplaceSourceInfo[]): readonly ICustomizationMarketplaceSourceInfo[] {
+	return [...sources].sort((first, second) => compareIgnoreCase(first.displayName ?? first.id, second.displayName ?? second.id));
 }
 
 export class PlatformCustomizationMarketplaceWorkbenchService implements ICustomizationMarketplaceService {
@@ -68,11 +73,13 @@ export class CustomizationMarketplaceWorkbenchService extends Disposable impleme
 			? []
 			: getAllPluginCustomizationMarketplaceSourceInfos(this.pluginMarketplaceService);
 		return [
-			...pluginSources,
-			...this.getProviderMarketplaceSources(true),
 			...(this.platformService.allSources ?? this.platformService.sources),
 			CustomizationMarketplaceSources.AgentFinderPublicFeed,
 			CustomizationMarketplaceSources.CopilotConnectors,
+			...sortMarketplaceSources([
+				...pluginSources,
+				...this.getProviderMarketplaceSources(true),
+			]),
 		];
 	}
 	readonly onDidChangeSources: Event<void>;
@@ -85,11 +92,13 @@ export class CustomizationMarketplaceWorkbenchService extends Disposable impleme
 			? [CustomizationMarketplaceSources.AgentFinderPublicFeed]
 			: [];
 		return [
-			...pluginSources,
-			...this.getProviderMarketplaceSources(false),
 			...this.platformService.sources.filter(source => source.id !== CustomizationMarketplaceSources.AgentFinderPublicFeed.id),
 			...harnessSources,
 			CustomizationMarketplaceSources.CopilotConnectors,
+			...sortMarketplaceSources([
+				...pluginSources,
+				...this.getProviderMarketplaceSources(false),
+			]),
 		];
 	}
 	private readonly harnessBindingCancellation: MutableDisposable<CancellationTokenSource>;
