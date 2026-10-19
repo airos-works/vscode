@@ -1357,15 +1357,6 @@ export class AICustomizationDiscoveryPage extends Disposable implements IAICusto
 				this.filteredBackfillLimitReached = false;
 				catalogError = error instanceof Error ? error : new Error(getErrorMessage(error));
 			}
-			if (this.query.isEmpty() && this.catalogPage) {
-				this.browseCatalogCache.set(this.selectedSourceId ?? '', {
-					items: this.catalogItems,
-					page: this.catalogPage,
-					curatedSections: undefined,
-					curatedSourceError: undefined,
-				});
-			}
-
 			if (browseSectionsPromise) {
 				const outcome = await browseSectionsPromise;
 				if (sequence !== this.requestSequence || request.token.isCancellationRequested) {

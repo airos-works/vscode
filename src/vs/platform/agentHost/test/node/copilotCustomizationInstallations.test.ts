@@ -204,18 +204,20 @@ suite('CopilotCustomizationInstallations', () => {
 		const negotiated: PluginInstallManagementResult['negotiated'] = { runtimeProtocolVersion: 3, grantedCapabilities: ['agent-plugin-confirmed-installation'] };
 		const planRequests: Parameters<CopilotClient['rpc']['plugins']['planInstall']>[0][] = [];
 		const applyRequests: Parameters<CopilotClient['rpc']['plugins']['applyInstall']>[0][] = [];
+		const searchRequests: Parameters<CopilotClient['rpc']['catalog']['search']>[0][] = [];
 		const decisions: string[] = [];
 		const serviceRef: { value?: CopilotCustomizationInstallations } = {};
 		const plugins = new class extends mock<CopilotClient['rpc']['plugins']>() {
 			override readonly planInstall: CopilotClient['rpc']['plugins']['planInstall'] = async request => {
 				planRequests.push(request);
+				const planNumber = planRequests.length;
 				return {
 					kind: 'outcome',
 					outcome: {
 						kind: 'install-planned',
 						plan: {
-							planHandle: 'plugin-plan',
-							operationId: 'plugin-operation',
+							planHandle: `plugin-plan-${planNumber}`,
+							operationId: `plugin-operation-${planNumber}`,
 							expiresAt,
 							review: sdkReview,
 						},
@@ -225,11 +227,12 @@ suite('CopilotCustomizationInstallations', () => {
 			};
 			override readonly applyInstall: CopilotClient['rpc']['plugins']['applyInstall'] = async request => {
 				applyRequests.push(request);
+				const operationId = request.planHandle === 'plugin-plan-2' ? 'plugin-operation-2' : 'plugin-operation-1';
 				for (const review of [{ ...sdkReview, name: 'tampered' }, sdkReview]) {
 					decisions.push(await serviceRef.value!.confirmationHandler({
 						policySessionId: 'policy-session',
 						confirmationId: `confirmation-${decisions.length}`,
-						operationId: 'plugin-operation',
+						operationId,
 						expiresAt,
 						reviewFingerprint: `fingerprint-${decisions.length}`,
 						review: { resource: 'plugin', review },
@@ -241,7 +244,7 @@ suite('CopilotCustomizationInstallations', () => {
 						kind: 'installed',
 						installation: {
 							name: sdkReview.name,
-							operationId: 'plugin-operation',
+							operationId,
 							target,
 							enabled: false,
 							source,
@@ -263,6 +266,16 @@ suite('CopilotCustomizationInstallations', () => {
 						entries: [{ status: 'available', identifier: 'demo-plugin', candidate }],
 						negotiated,
 					});
+					override readonly search: CopilotClient['rpc']['catalog']['search'] = async request => {
+						searchRequests.push(request);
+						return {
+							kind: 'succeeded',
+							searchId: 'refreshed-plugin-search',
+							candidates: [{ ...candidate, handle: 'refreshed-plugin-candidate' }],
+							truncated: false,
+							negotiated,
+						};
+					};
 				}(),
 				plugins,
 				skills: new class extends mock<CopilotClient['rpc']['skills']>() { }(),
@@ -276,7 +289,7 @@ suite('CopilotCustomizationInstallations', () => {
 		assert.strictEqual(search.kind, 'page');
 		const item = search.kind === 'page' ? search.items[0] : undefined;
 		assert.ok(item);
-		const review = await service.prepare(URI.parse('agent-host-copilotcli:///session'), {
+		const request = {
 			mediaType: candidate.mediaType,
 			identifier: item.identifier!,
 			displayName: item.displayName,
@@ -284,24 +297,36 @@ suite('CopilotCustomizationInstallations', () => {
 			version: candidate.version,
 			selectionId: item.selectionId,
 			installation: { kind: 'plugin' },
-		});
-		await service.apply(review.operationId);
+		} as const;
+		await service.prepare(URI.parse('agent-host-copilotcli:///session'), request);
+		const review = await service.prepare(URI.parse('agent-host-copilotcli:///session'), request);
+		const applyResult = await service.apply(review.operationId);
 
 		assert.deepStrictEqual({
 			item: {
 				kind: item.kind,
+				identifier: item.identifier,
 				installable: item.installable,
 				version: item.version,
 				repository: item.repository,
 				path: item.path,
 			},
 			review,
-			planRequests,
-			applyRequests,
+			applyResult,
+			planRequests: planRequests.map(request => ({
+				...request,
+				contract: { ...request.contract, requiredCapabilities: [...request.contract.requiredCapabilities] },
+			})),
+			applyRequests: applyRequests.map(request => ({
+				...request,
+				contract: { ...request.contract, requiredCapabilities: [...request.contract.requiredCapabilities] },
+			})),
+			searchRequests: searchRequests.map(request => ({ query: request.query, kinds: request.kinds })),
 			decisions,
 		}, {
 			item: {
 				kind: 'plugin',
+				identifier: candidate.identity,
 				installable: true,
 				version: '1.2.3',
 				repository: 'github/demo-plugin',
@@ -321,6 +346,13 @@ suite('CopilotCustomizationInstallations', () => {
 				installsDisabled: true,
 				mcpServerCount: 0,
 			},
+			applyResult: {
+				kind: 'plugin',
+				name: sdkReview.name,
+				repository: source.repository,
+				ref: source.revision,
+				path: source.root,
+			},
 			planRequests: [{
 				contract: {
 					protocolVersion: 3,
@@ -328,15 +360,23 @@ suite('CopilotCustomizationInstallations', () => {
 				},
 				candidateHandle: candidate.handle,
 				policySessionId: 'policy-session',
+			}, {
+				contract: {
+					protocolVersion: 3,
+					requiredCapabilities: ['catalog-search-credential-required', 'catalog-search-session-bound', 'catalog-selection', 'agent-plugin-discovery', 'agent-plugin-confirmed-installation'],
+				},
+				candidateHandle: 'refreshed-plugin-candidate',
+				policySessionId: 'policy-session',
 			}],
 			applyRequests: [{
 				contract: {
 					protocolVersion: 3,
 					requiredCapabilities: ['catalog-search-credential-required', 'catalog-search-session-bound', 'catalog-selection', 'agent-plugin-discovery', 'agent-plugin-confirmed-installation'],
 				},
-				planHandle: 'plugin-plan',
+				planHandle: 'plugin-plan-2',
 				policySessionId: 'policy-session',
 			}],
+			searchRequests: [{ query: candidate.identity, kinds: ['plugin'] }],
 			decisions: ['cancel', 'confirm'],
 		});
 	});

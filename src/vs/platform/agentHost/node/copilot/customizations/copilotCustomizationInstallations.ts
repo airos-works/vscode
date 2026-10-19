@@ -12,7 +12,7 @@ import { hasKey } from '../../../../../base/common/types.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { localize } from '../../../../../nls.js';
-import { IAgentCustomizationInstallation, IAgentCustomizationInstallationCatalogue, IAgentCustomizationInstallationRequest, IAgentCustomizationInstallationReview, IAgentCustomizationMarketplaceSearchItem, IAgentCustomizationMarketplaceSearchRequest, IAgentCustomizationMarketplaceSearchResult } from '../../../common/agent.js';
+import { IAgentCustomizationInstallation, IAgentCustomizationInstallationApplyResult, IAgentCustomizationInstallationCatalogue, IAgentCustomizationInstallationRequest, IAgentCustomizationInstallationReview, IAgentCustomizationMarketplaceSearchItem, IAgentCustomizationMarketplaceSearchRequest, IAgentCustomizationMarketplaceSearchResult } from '../../../common/agent.js';
 import { toCopilotMcpServerConfiguration } from '../../../../mcp/common/mcpCopilotConfiguration.js';
 import type { IMcpServerConfiguration } from '../../../../mcp/common/mcpPlatformTypes.js';
 
@@ -82,6 +82,15 @@ interface ISdkResult {
 	readonly outcome?: {
 		readonly kind: string;
 		readonly reason?: unknown;
+		readonly installation?: {
+			readonly installationId?: string;
+			readonly name?: string;
+			readonly source?: {
+				readonly repository?: string;
+				readonly revision?: string;
+				readonly root?: string;
+			};
+		};
 	};
 }
 
@@ -414,7 +423,7 @@ export class CopilotCustomizationInstallations extends Disposable {
 			: this.prepareInstall(client, policySessionId, request);
 	}
 
-	async apply(operationId: string): Promise<void> {
+	async apply(operationId: string): Promise<IAgentCustomizationInstallationApplyResult | undefined> {
 		const operation = this.operations.get(operationId);
 		if (!operation) {
 			throw new Error(localize('copilot.customizationInstallation.expired', "This customization installation review expired. Start the operation again."));
@@ -427,8 +436,10 @@ export class CopilotCustomizationInstallations extends Disposable {
 		try {
 			const result = await operation.apply();
 			if (result) {
-				this.assertApplied(result, operation.review.action);
+				const outcome = this.assertApplied(result, operation.review.action);
+				return this.toApplyResult(operation.review, outcome);
 			}
+			return undefined;
 		} finally {
 			this.operations.deleteAndDispose(operationId);
 		}
@@ -459,7 +470,7 @@ export class CopilotCustomizationInstallations extends Disposable {
 			candidate = retained.candidate;
 			searchId = retained.searchId;
 		} else {
-			if (!request.itemUrl) {
+			if (request.installation.kind !== 'plugin' && !request.itemUrl) {
 				throw new Error(localize('copilot.customizationInstallation.unsupported', "This customization does not provide an SDK installation identity."));
 			}
 			const expectedKind = request.installation.kind === 'skill' ? 'ai-skill' : request.installation.kind === 'mcp' ? 'mcp-server' : 'plugin';
@@ -469,7 +480,7 @@ export class CopilotCustomizationInstallations extends Disposable {
 					requiredCapabilities: catalogSearchCapabilities,
 				},
 				policySessionId,
-				query: request.displayName,
+				query: request.installation.kind === 'plugin' ? request.identifier : request.displayName,
 				limit: 50,
 				kinds: [expectedKind],
 			});
@@ -478,9 +489,9 @@ export class CopilotCustomizationInstallations extends Disposable {
 			}
 			const matched = search.candidates.find(candidate =>
 				candidate.kind === expectedKind
-				&& candidate.kind !== 'plugin'
-				&& candidate.source.kind === 'url'
-				&& candidate.source.url === request.itemUrl
+				&& (candidate.kind === 'plugin'
+					? candidate.identity === request.identifier
+					: candidate.source.kind === 'url' && candidate.source.url === request.itemUrl)
 			);
 			if (!matched || !this.isInstallableCatalogCandidate(matched)) {
 				throw new Error(localize('copilot.customizationInstallation.catalogChanged', "The SDK catalog no longer contains this exact customization. Refresh Browse and try again."));
@@ -894,6 +905,7 @@ export class CopilotCustomizationInstallations extends Disposable {
 		this.trimRetainedCatalogEntries(this.catalogSelections);
 		return {
 			selectionId,
+			identifier: candidate.kind === 'plugin' ? candidate.identity : selectionId,
 			kind: candidate.kind === 'ai-skill' ? 'skill' : candidate.kind === 'mcp-server' ? 'mcp' : 'plugin',
 			displayName: candidate.displayName,
 			description: candidate.description,
@@ -1145,18 +1157,38 @@ export class CopilotCustomizationInstallations extends Disposable {
 			: message);
 	}
 
-	private assertApplied(result: ISdkResult, action: 'install' | 'uninstall'): void {
+	private assertApplied(result: ISdkResult, action: 'install' | 'uninstall'): NonNullable<ISdkResult['outcome']> {
 		if (result.kind !== 'outcome') {
 			throw this.resultError(result, action === 'install'
 				? localize('copilot.customizationInstallation.installFailed', "The SDK could not install this customization.")
 				: localize('copilot.customizationInstallation.uninstallFailed', "The SDK could not remove this customization."));
 		}
-		const outcome = (result as { readonly kind: 'outcome'; readonly outcome: { readonly kind: string } }).outcome;
+		const outcome = result.outcome!;
 		if (outcome.kind !== (action === 'install' ? 'installed' : 'uninstalled')) {
 			throw new Error(action === 'install'
 				? localize('copilot.customizationInstallation.installNotCompleted', "The SDK did not complete this customization installation.")
 				: localize('copilot.customizationInstallation.uninstallNotCompleted', "The SDK did not complete this customization removal."));
 		}
+		return outcome;
+	}
+
+	private toApplyResult(review: IAgentCustomizationInstallationReview, outcome: NonNullable<ISdkResult['outcome']>): IAgentCustomizationInstallationApplyResult | undefined {
+		const installation = outcome.installation;
+		if (review.kind === 'plugin') {
+			if (!installation?.name || !installation.source?.repository || !installation.source.revision) {
+				throw new Error(localize('copilot.customizationInstallation.pluginIdentityUnavailable', "The SDK installed the plugin without returning its verified installation identity."));
+			}
+			return {
+				kind: 'plugin',
+				name: installation.name,
+				repository: installation.source.repository,
+				ref: installation.source.revision,
+				path: installation.source.root ?? '',
+			};
+		}
+		return installation?.installationId
+			? { kind: 'receipt', installationId: installation.installationId }
+			: undefined;
 	}
 
 	override dispose(): void {
