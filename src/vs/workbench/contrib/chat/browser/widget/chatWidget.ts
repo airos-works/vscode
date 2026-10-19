@@ -2712,6 +2712,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			inputPartHorizontalPadding: this.viewOptions.inputPartHorizontalPadding,
 			hostModelSelection: this.viewOptions.hostModelSelection,
 			deferredNotificationsEnabled: this.viewOptions.deferredNotificationsEnabled,
+			ownsDraftVoiceSession: this.viewOptions.ownsDraftVoiceSession,
 			hostSubmit: this.viewOptions.hostSubmit,
 		};
 
