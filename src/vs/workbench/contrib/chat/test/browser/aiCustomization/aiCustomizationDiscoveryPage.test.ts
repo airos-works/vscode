@@ -1971,7 +1971,7 @@ suite('AICustomizationDiscoveryPage', () => {
 
 		assert.deepStrictEqual({
 			headings: [...fixture.container.querySelectorAll('.customization-discovery-section-title')].map(element => element.textContent),
-			warning: fixture.prompts.some(([, message]) => message.includes('Curated feeds unavailable')),
+			warning: fixture.prompts.some(([, message]) => String(message).includes('Curated feeds unavailable')),
 			item: fixture.container.querySelector('.customization-discovery-card-name')?.textContent,
 		}, {
 			headings: ['Expand your agent\'s horizons'],
