@@ -81,6 +81,10 @@ function enableASARSupport(): void {
 		return; // only on Electron / Electron-as-node
 	}
 
+	if (process.versions['aurora']) {
+		return; // no ASAR on Aurora (air/OS): dependencies are plain `node_modules`
+	}
+
 	if (process.env['VSCODE_DEV']) {
 		return; // no ASAR when running out of sources
 	}

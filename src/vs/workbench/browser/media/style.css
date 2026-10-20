@@ -28,9 +28,16 @@
 .monaco-workbench.linux:lang(ja) { font-family: system-ui, "Ubuntu", "Droid Sans", "Source Han Sans J", "Source Han Sans JP", "Source Han Sans", sans-serif; }
 .monaco-workbench.linux:lang(ko) { font-family: system-ui, "Ubuntu", "Droid Sans", "Source Han Sans K", "Source Han Sans JR", "Source Han Sans", "UnDotum", "FBaekmuk Gulim", sans-serif; }
 
+.monaco-workbench.haiku { font-family: "Noto Sans", sans-serif; }
+.monaco-workbench.haiku:lang(zh-Hans),
+.monaco-workbench.haiku:lang(zh-Hant),
+.monaco-workbench.haiku:lang(ja),
+.monaco-workbench.haiku:lang(ko) { font-family: "Noto Sans", "Noto Sans CJK JP", sans-serif; }
+
 .monaco-workbench.mac { --monaco-monospace-font: "SF Mono", Monaco, Menlo, Courier, monospace; }
 .monaco-workbench.windows { --monaco-monospace-font: Consolas, "Courier New", monospace; }
 .monaco-workbench.linux { --monaco-monospace-font: "Ubuntu Mono", "Liberation Mono", "DejaVu Sans Mono", "Courier New", monospace; }
+.monaco-workbench.haiku { --monaco-monospace-font: "Noto Sans Mono", "DejaVu Sans Mono", monospace; }
 
 /* Global Styles */
 

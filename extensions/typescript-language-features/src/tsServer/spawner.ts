@@ -207,7 +207,7 @@ export class TypeScriptServerSpawner {
 
 		args.push('--useInferredProjectPerProjectRoot');
 
-		if (configuration.disableAutomaticTypeAcquisition || kind === TsServerProcessKind.Syntax || kind === TsServerProcessKind.Diagnostics) {
+		if (configuration.disableAutomaticTypeAcquisition || isAurora() || kind === TsServerProcessKind.Syntax || kind === TsServerProcessKind.Diagnostics) {
 			args.push('--disableAutomaticTypingAcquisition');
 		}
 
@@ -303,3 +303,10 @@ export class TypeScriptServerSpawner {
 	}
 }
 
+/**
+ * On air/OS (Haiku) the extension host runs on Aurora, and tsserver on Node.js
+ * for Haiku, a platform TypeScript's automatic type acquisition does not know.
+ */
+function isAurora(): boolean {
+	return typeof process !== 'undefined' && typeof process.versions?.['aurora'] === 'string';
+}

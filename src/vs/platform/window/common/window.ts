@@ -7,7 +7,7 @@ import { VSBuffer } from '../../../base/common/buffer.js';
 import { IStringDictionary } from '../../../base/common/collections.js';
 import { AGENTS_AUTHORITY } from '../../../base/common/network.js';
 import { PerformanceMark } from '../../../base/common/performance.js';
-import { isMacintosh, isNative, isTahoeOrNewer, isWeb } from '../../../base/common/platform.js';
+import { isHaiku, isMacintosh, isNative, isTahoeOrNewer, isWeb } from '../../../base/common/platform.js';
 import { URI, UriComponents, UriDto } from '../../../base/common/uri.js';
 import { ISandboxConfiguration } from '../../../base/parts/sandbox/common/sandboxTypes.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
@@ -366,7 +366,7 @@ export function getTitleBarStyle(configurationService: IConfigurationService): T
 		}
 	}
 
-	return TitlebarStyle.CUSTOM; // default to custom on all OS
+	return isHaiku ? TitlebarStyle.NATIVE : TitlebarStyle.CUSTOM; // default to custom on all OS but air/OS, where windows have Haiku's tab and menu bar
 }
 
 export function getWindowControlsStyle(configurationService: IConfigurationService): WindowControlsStyle {

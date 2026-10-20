@@ -12,6 +12,7 @@ let _isMacintosh = false;
 let _isLinux = false;
 let _isLinuxSnap = false;
 let _isChromeOS = false;
+let _isHaiku = false;
 let _isNative = false;
 let _isWeb = false;
 let _isElectron = false;
@@ -43,6 +44,7 @@ export interface INodeProcess {
 		node?: string;
 		electron?: string;
 		chrome?: string;
+		aurora?: string;
 	};
 	type?: string;
 	cwd: () => string;
@@ -77,6 +79,7 @@ if (typeof nodeProcess === 'object') {
 	_isMacintosh = (nodeProcess.platform === 'darwin');
 	_isLinux = (nodeProcess.platform === 'linux');
 	_isLinuxSnap = _isLinux && !!nodeProcess.env['SNAP'] && !!nodeProcess.env['SNAP_REVISION'];
+	_isHaiku = typeof nodeProcess.versions?.aurora === 'string';
 	_isElectron = isElectronProcess;
 	_isCI = !!nodeProcess.env['CI'] || !!nodeProcess.env['BUILD_ARTIFACTSTAGINGDIRECTORY'] || !!nodeProcess.env['GITHUB_WORKSPACE'];
 	_locale = LANGUAGE_DEFAULT;
@@ -103,6 +106,7 @@ else if (typeof navigator === 'object' && !isElectronRenderer) {
 	_isIOS = (_userAgent.indexOf('Macintosh') >= 0 || _userAgent.indexOf('iPad') >= 0 || _userAgent.indexOf('iPhone') >= 0) && !!navigator.maxTouchPoints && navigator.maxTouchPoints > 0;
 	_isLinux = _userAgent.indexOf('Linux') >= 0;
 	_isChromeOS = _userAgent.indexOf('CrOS') >= 0;
+	_isHaiku = _userAgent.indexOf('Haiku') >= 0;
 	_isMobile = _userAgent?.indexOf('Mobi') >= 0;
 	_isWeb = true;
 	_language = nls.getNLSLanguage() || LANGUAGE_DEFAULT;
@@ -146,6 +150,11 @@ export const isMacintosh = _isMacintosh;
 export const isLinux = _isLinux;
 export const isLinuxSnap = _isLinuxSnap;
 export const isChromeOS = _isChromeOS;
+/**
+ * Whether we run on air/OS (Haiku). The desktop app runs there on Aurora,
+ * which reports Linux as the platform, so `isLinux` is true as well.
+ */
+export const isHaiku = _isHaiku;
 export const isNative = _isNative;
 export const isElectron = _isElectron;
 export const isWeb = _isWeb;

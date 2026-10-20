@@ -96,6 +96,11 @@ export function getDefaultUserDataPath(productName: string): string {
 			appDataPath = join(homedir(), 'Library', 'Application Support');
 			break;
 		case 'linux':
+			if (process.versions['aurora']) {
+				// air/OS (Haiku), where Aurora reports Linux: settings live in ~/config/settings
+				appDataPath = join(homedir(), 'config', 'settings');
+				break;
+			}
 			appDataPath = process.env['XDG_CONFIG_HOME'] || join(homedir(), '.config');
 			break;
 		default:

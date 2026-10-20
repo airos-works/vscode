@@ -257,7 +257,12 @@ export class LinuxExternalTerminalService extends ExternalTerminalService implem
 				const termArgs: string[] = [];
 				//termArgs.push('--title');
 				//termArgs.push(`"${TERMINAL_TITLE}"`);
-				if (exec.indexOf('gnome-terminal') >= 0) {
+				if (env.isHaiku && basename === 'terminal') {
+					// Haiku's Terminal runs the command that follows its options
+					if (dir) {
+						termArgs.push('-w', dir);
+					}
+				} else if (exec.indexOf('gnome-terminal') >= 0) {
 					termArgs.push('-x');
 				} else {
 					termArgs.push('-e');
@@ -295,7 +300,9 @@ export class LinuxExternalTerminalService extends ExternalTerminalService implem
 
 	public static async getDefaultTerminalLinuxReady(): Promise<string> {
 		if (!LinuxExternalTerminalService._DEFAULT_TERMINAL_LINUX_READY) {
-			if (!env.isLinux) {
+			if (env.isHaiku) {
+				LinuxExternalTerminalService._DEFAULT_TERMINAL_LINUX_READY = Promise.resolve('Terminal');
+			} else if (!env.isLinux) {
 				LinuxExternalTerminalService._DEFAULT_TERMINAL_LINUX_READY = Promise.resolve('xterm');
 			} else {
 				const isDebian = await pfs.Promises.exists('/etc/debian_version');
@@ -326,7 +333,7 @@ export class LinuxExternalTerminalService extends ExternalTerminalService implem
 			execPromise.then(exec => {
 				const env = getSanitizedEnvironment(process);
 				const basename = path.basename(exec).toLowerCase();
-				const args = basename === 'ghostty' && cwd ? [`--working-directory=${cwd}`] : [];
+				const args = basename === 'ghostty' && cwd ? [`--working-directory=${cwd}`] : env.isHaiku && basename === 'terminal' && cwd ? ['-w', cwd] : [];
 				const child = spawner.spawn(exec, args, { cwd, env });
 				child.on('error', e);
 				child.on('exit', () => c());

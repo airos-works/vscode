@@ -83,6 +83,12 @@ const codeCachePath = getCodeCachePath();
 // Disable default menu (https://github.com/electron/electron/issues/35512)
 Menu.setApplicationMenu(null);
 
+// On air/OS (Haiku), Aurora draws windows with WebKit, not Chromium: let
+// the workbench take the WebKit paths it has for Safari
+if (process.versions['aurora']) {
+	app.userAgentFallback = app.userAgentFallback.replace(/ Chrome\/\S+/, '');
+}
+
 // Configure crash reporter
 perf.mark('code/willStartCrashReporter');
 // If a crash-reporter-directory is specified we store the crash reports

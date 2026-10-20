@@ -13,7 +13,7 @@ import { Emitter, Event } from '../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
 import { matchesSomeScheme, Schemas } from '../../../base/common/network.js';
 import { dirname, join, posix, resolve, win32 } from '../../../base/common/path.js';
-import { isLinux, isMacintosh, isWindows } from '../../../base/common/platform.js';
+import { isHaiku, isLinux, isMacintosh, isWindows } from '../../../base/common/platform.js';
 import { AddFirstParameterToFunctions, hasKey } from '../../../base/common/types.js';
 import { URI, UriComponents } from '../../../base/common/uri.js';
 import { virtualMachineHint } from '../../../base/node/id.js';
@@ -829,7 +829,8 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		if (isWindows) {
 			isAdmin = (await import('native-is-elevated')).default();
 		} else {
-			isAdmin = process.getuid?.() === 0;
+			// air/OS (Haiku) has one user, whose uid is 0: not a superuser there
+			isAdmin = !isHaiku && process.getuid?.() === 0;
 		}
 
 		return isAdmin;

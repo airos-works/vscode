@@ -498,8 +498,9 @@ export async function main(argv: string[]): Promise<void> {
 			// `--flag=value` form. See https://github.com/microsoft/vscode/issues/209072.
 			const spawnArgs = isWindows ? combineUriFlags(argv.slice(2)) : argv.slice(2);
 
-			// We spawn the resolved executable directly
-			child = spawn(process.execPath, spawnArgs, options);
+			// We spawn the resolved executable directly. On air/OS (Haiku) the CLI
+			// runs on Node.js and the app is its launcher (resources/haiku/bin).
+			child = spawn(process.env['VSCODE_HAIKU_LAUNCHER'] || process.execPath, spawnArgs, options);
 		} else {
 			// On macOS, we spawn using the open command to obtain behavior
 			// similar to if the app was launched from the dock

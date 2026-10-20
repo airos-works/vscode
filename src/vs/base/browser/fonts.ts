@@ -5,7 +5,7 @@
 
 import { mainWindow } from './window.js';
 import type { IJSONSchemaSnippet } from '../common/jsonSchema.js';
-import { isElectron, isMacintosh, isWindows } from '../common/platform.js';
+import { isElectron, isHaiku, isMacintosh, isWindows } from '../common/platform.js';
 
 /**
  * The best font-family to be used in CSS based on the platform:
@@ -15,7 +15,7 @@ import { isElectron, isMacintosh, isWindows } from '../common/platform.js';
  *
  * Note: this currently does not adjust for different locales.
  */
-export const DEFAULT_FONT_FAMILY = isWindows ? '"Segoe WPC", "Segoe UI", sans-serif' : isMacintosh ? '-apple-system, BlinkMacSystemFont, sans-serif' : 'system-ui, "Ubuntu", "Droid Sans", sans-serif';
+export const DEFAULT_FONT_FAMILY = isWindows ? '"Segoe WPC", "Segoe UI", sans-serif' : isMacintosh ? '-apple-system, BlinkMacSystemFont, sans-serif' : isHaiku ? '"Noto Sans", sans-serif' : 'system-ui, "Ubuntu", "Droid Sans", sans-serif';
 
 interface FontData {
 	readonly family: string;

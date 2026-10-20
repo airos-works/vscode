@@ -43,6 +43,10 @@ function enableASARSupport(): void {
 		return; // only on Electron / Electron-as-node
 	}
 
+	if (process.versions['aurora']) {
+		return; // no ASAR on Aurora (air/OS): dependencies are plain `node_modules`
+	}
+
 	let trace: ((message: string) => void) | undefined;
 	const traceSink = process.env['VSCODE_ASAR_TRACE'] || undefined;
 	if (traceSink) {

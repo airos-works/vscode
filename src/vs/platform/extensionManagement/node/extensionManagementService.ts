@@ -15,6 +15,7 @@ import { Disposable } from '../../../base/common/lifecycle.js';
 import { ResourceMap, ResourceSet } from '../../../base/common/map.js';
 import { Schemas } from '../../../base/common/network.js';
 import * as path from '../../../base/common/path.js';
+import { isHaiku } from '../../../base/common/platform.js';
 import { joinPath } from '../../../base/common/resources.js';
 import * as semver from '../../../base/common/semver/semver.js';
 import { isBoolean, isDefined, isUndefined } from '../../../base/common/types.js';
@@ -340,7 +341,8 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
 	private async downloadExtension(extension: IGalleryExtension, operation: InstallOperation, verifySignature: boolean, clientTargetPlatform?: TargetPlatform): Promise<{ readonly location: URI; readonly verificationStatus: ExtensionSignatureVerificationCode | undefined }> {
 		if (verifySignature) {
 			const value = this.configurationService.getValue(VerifyExtensionSignatureConfigKey);
-			verifySignature = isBoolean(value) ? value : true;
+			// vsce-sign, which verifies signatures, has no build for air/OS (Haiku)
+			verifySignature = isBoolean(value) ? value : !isHaiku;
 		}
 		const { location, verificationStatus } = await this.extensionsDownloader.download(extension, operation, verifySignature, clientTargetPlatform);
 		const shouldRequireSignature = shouldRequireRepositorySignatureFor(extension.private, await this.extensionGalleryManifestService.getExtensionGalleryManifest());
@@ -351,6 +353,7 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
 			&& verifySignature
 			&& this.environmentService.isBuilt
 			&& (await this.getTargetPlatform()) !== TargetPlatform.LINUX_ARMHF
+			&& !isHaiku
 		) {
 			try {
 				await this.extensionsDownloader.delete(location);
