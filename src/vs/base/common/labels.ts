@@ -5,7 +5,7 @@
 
 import { hasDriveLetter, toSlashes } from './extpath.js';
 import { posix, sep, win32 } from './path.js';
-import { isMacintosh, isWindows, OperatingSystem, OS } from './platform.js';
+import { isHaiku, isMacintosh, isWindows, OperatingSystem, OS } from './platform.js';
 import { extUri, extUriIgnorePathCase } from './resources.js';
 import { rtrim, startsWithIgnoreCase } from './strings.js';
 import { URI } from './uri.js';
@@ -438,7 +438,8 @@ export function mnemonicButtonLabel(label: string, forceDisableMnemonics?: boole
 	if (forceDisableMnemonics) {
 		return withoutMnemonic;
 	}
-	if (isMacintosh) {
+	if (isMacintosh || isHaiku) {
+		// Haiku's buttons, like macOS's, have no mnemonics
 		return { withMnemonic: withoutMnemonic, withoutMnemonic };
 	}
 
