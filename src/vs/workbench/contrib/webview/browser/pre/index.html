@@ -5,7 +5,7 @@
 	<meta charset="UTF-8">
 
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-sn80KfA+MU1XygyWiC6Pi0aLZubC6RmEK+O6llFPkGg=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-dvmO/R+kiIet5zlv079GQSrZz3Dm7bYxqsiM5Y7q1Bk=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -35,6 +35,10 @@
 		const onElectron = searchParams.get('platform') === 'electron';
 		const disableServiceWorker = searchParams.has('disableServiceWorker');
 		const expectedWorkerVersion = parseInt(searchParams.get('swVersion'));
+		// air/OS (Haiku): the engine has no service workers for this scheme. The
+		// host page loads the content's resources itself and gives the content
+		// blob: URLs for them (haikuResources, below).
+		const useHaikuResources = !disableServiceWorker && navigator.userAgent.indexOf('Haiku') >= 0;
 
 		/**
 		 * @param {string} name
@@ -257,7 +261,7 @@
 
 		/** @type {Promise<void>} */
 		const workerReady = new Promise((resolve, reject) => {
-			if (disableServiceWorker) {
+			if (disableServiceWorker || useHaikuResources) {
 				return resolve();
 			}
 
@@ -459,7 +463,7 @@
 			reduceMotion: false,
 		};
 
-		if (!disableServiceWorker) {
+		if (!disableServiceWorker && !useHaikuResources) {
 			hostMessaging.onMessage('did-load-resource', (_event, data) => {
 				const transfer = data.stream ? [data.stream] : [];
 				assertIsDefined(navigator.serviceWorker.controller).postMessage({ channel: 'did-load-resource', data }, transfer);
@@ -487,6 +491,277 @@
 				}
 			});
 		}
+
+		/**
+		 * The content's resources on air/OS, loaded as the service worker would
+		 * load them (load-resource) and given to the content as blob: URLs: in
+		 * the document's elements, styles and style sheets, in elements the
+		 * content adds later, and through fetch().
+		 */
+		const haikuResources = useHaikuResources ? (() => {
+			const resourceBaseAuthority = searchParams.get('vscode-resource-base-authority') || '';
+			/** @type {Map<string, { resolve: (blob: Blob | undefined) => void, mime?: string, chunks: Uint8Array[] }>} */
+			const requests = new Map();
+			/** @type {Map<string, Promise<string | undefined>>} */
+			const blobUrls = new Map();
+			let nextRequestId = 1;
+
+			/**
+			 * @param {string} id
+			 * @param {Blob | undefined} blob
+			 */
+			const finish = (id, blob) => {
+				const request = requests.get(id);
+				if (request) {
+					requests.delete(id);
+					request.resolve(blob);
+				}
+			};
+
+			hostMessaging.onMessage('did-load-resource', async (_event, data) => {
+				const request = requests.get(data.id);
+				if (!request) {
+					return;
+				}
+				if (data.status !== 200 && data.status !== 206) {
+					finish(data.id, undefined);
+					return;
+				}
+				request.mime = data.mime;
+				if (data.stream) {
+					/** @type {Uint8Array[]} */
+					const chunks = [];
+					const reader = data.stream.getReader();
+					for (; ;) {
+						const { value, done } = await reader.read();
+						if (done) {
+							break;
+						}
+						chunks.push(value);
+					}
+					finish(data.id, new Blob(chunks, { type: data.mime }));
+				}
+			});
+			hostMessaging.onMessage('did-load-resource-chunk', (_event, data) => {
+				requests.get(data.id)?.chunks.push(data.data);
+			});
+			hostMessaging.onMessage('did-load-resource-end', (_event, data) => {
+				const request = requests.get(data.id);
+				if (request) {
+					finish(data.id, data.error ? undefined : new Blob(request.chunks, { type: request.mime }));
+				}
+			});
+
+			/**
+			 * @param {string} url
+			 */
+			const isResource = (url) => {
+				try {
+					const parsed = new URL(url);
+					return !!resourceBaseAuthority && parsed.protocol === 'https:' && parsed.hostname.endsWith('.' + resourceBaseAuthority);
+				} catch {
+					return false;
+				}
+			};
+
+			/**
+			 * @param {string} url
+			 * @return {Promise<Blob | undefined>}
+			 */
+			const load = (url) => new Promise(resolve => {
+				const parsed = new URL(url);
+				const firstHostSegment = parsed.hostname.slice(0, parsed.hostname.length - (resourceBaseAuthority.length + 1));
+				const scheme = firstHostSegment.split('+', 1)[0];
+				const id = `haiku-${nextRequestId++}`;
+				requests.set(id, { resolve, chunks: [] });
+				hostMessaging.postMessage('load-resource', {
+					id,
+					scheme,
+					authority: firstHostSegment.slice(scheme.length + 1),
+					path: parsed.pathname,
+					query: parsed.search.replace(/^\?/, ''),
+				});
+			});
+
+			const cssReferences = /url\(\s*(['"]?)([^'")]+)\1\s*\)|@import\s+(['"])([^'"]+)\3/g;
+
+			/**
+			 * A style sheet's own url()s and @imports, resolved against its address.
+			 * @param {string} text
+			 * @param {string | undefined} base
+			 * @return {Promise<string>}
+			 */
+			const rewriteCss = async (text, base) => {
+				/** @type {Map<string, string>} */
+				const replacements = new Map();
+				const references = new Set(Array.from(text.matchAll(cssReferences), match => match[2] ?? match[4]));
+				await Promise.all(Array.from(references, async reference => {
+					let absolute;
+					try {
+						absolute = new URL(reference, base).href;
+					} catch {
+						return;
+					}
+					const blobUrl = isResource(absolute) ? await toBlobUrl(absolute) : undefined;
+					if (blobUrl) {
+						replacements.set(reference, blobUrl);
+					}
+				}));
+				return text.replace(cssReferences, (whole, _quote, urlReference, _importQuote, importReference) => {
+					const replacement = replacements.get(urlReference ?? importReference);
+					if (!replacement) {
+						return whole;
+					}
+					return urlReference !== undefined ? `url("${replacement}")` : `@import "${replacement}"`;
+				});
+			};
+
+			/**
+			 * @param {string} url
+			 * @return {Promise<string | undefined>}
+			 */
+			const toBlobUrl = (url) => {
+				let result = blobUrls.get(url);
+				if (!result) {
+					result = load(url).then(async blob => {
+						if (!blob) {
+							return undefined;
+						}
+						if (/^text\/css/.test(blob.type) || /\.css$/i.test(new URL(url).pathname)) {
+							blob = new Blob([await rewriteCss(await blob.text(), url)], { type: 'text/css' });
+						}
+						return URL.createObjectURL(blob);
+					});
+					blobUrls.set(url, result);
+				}
+				return result;
+			};
+
+			// For the content's script (contentScript): undefined for other addresses.
+			/** @type {any} */ (window).__vscodeHaikuResource = (/** @type {string} */ url) => isResource(url) ? toBlobUrl(url) : Promise.resolve(undefined);
+
+			const attributes = [['script', 'src'], ['link', 'href'], ['img', 'src'], ['source', 'src'], ['video', 'src'], ['video', 'poster'],
+			['audio', 'src'], ['track', 'src'], ['embed', 'src'], ['input', 'src'], ['image', 'href'], ['use', 'href']];
+
+			// Rewrites what the content adds later, and its fetch()es.
+			const contentScript = `(() => {
+				const resource = window.parent.__vscodeHaikuResource;
+				if (typeof resource !== 'function') {
+					return;
+				}
+				const attributes = { SCRIPT: 'src', LINK: 'href', IMG: 'src', SOURCE: 'src', VIDEO: 'src', AUDIO: 'src', TRACK: 'src', EMBED: 'src', INPUT: 'src' };
+				const selector = 'script[src],link[href],img[src],source[src],video[src],audio[src],track[src],embed[src],input[src]';
+				const rewrite = element => {
+					const attribute = attributes[element.tagName];
+					const value = attribute && element.getAttribute(attribute);
+					if (!value || /^(blob|data):/.test(value)) {
+						return;
+					}
+					let absolute;
+					try {
+						absolute = new URL(value, document.baseURI).href;
+					} catch {
+						return;
+					}
+					resource(absolute).then(blobUrl => {
+						if (blobUrl && element.getAttribute(attribute) === value) {
+							element.setAttribute(attribute, blobUrl);
+						}
+					});
+				};
+				new MutationObserver(records => {
+					for (const record of records) {
+						if (record.type === 'attributes') {
+							rewrite(record.target);
+						} else {
+							for (const node of record.addedNodes) {
+								if (node.nodeType === 1) {
+									rewrite(node);
+									node.querySelectorAll(selector).forEach(rewrite);
+								}
+							}
+						}
+					}
+				}).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'href'] });
+				const originalFetch = window.fetch;
+				window.fetch = function (input, init) {
+					const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input && input.url;
+					let absolute;
+					try {
+						absolute = new URL(url, document.baseURI).href;
+					} catch {
+						return originalFetch.call(this, input, init);
+					}
+					return resource(absolute).then(blobUrl => originalFetch.call(this, blobUrl || input, init));
+				};
+			})();`;
+
+			/**
+			 * Adds blob: to the directives that allow the resources.
+			 * @param {string} policy
+			 * @param {string} cspSource
+			 */
+			const allowBlobs = (policy, cspSource) => policy.split(';').map(directive => {
+				const parts = directive.trim().split(/\s+/);
+				if (parts.length < 2 || !/-src(-elem|-attr)?$/.test(parts[0]) || parts.includes('blob:')) {
+					return directive;
+				}
+				const allowsResources = parts.some(part => part === cspSource || part === 'https:' || part === '*' || (resourceBaseAuthority && part.endsWith(resourceBaseAuthority)));
+				return allowsResources ? `${directive} blob:` : directive;
+			}).join(';');
+
+			return {
+				/**
+				 * The document with the resources it names as blob: URLs.
+				 * @param {string} html
+				 * @param {string} cspSource
+				 * @param {boolean} allowScripts
+				 * @return {Promise<string>}
+				 */
+				async rewriteDocument(html, cspSource, allowScripts) {
+					const newDocument = new DOMParser().parseFromString(html, 'text/html');
+					const baseElement = newDocument.querySelector('base[href]');
+					const base = baseElement?.getAttribute('href') ?? undefined;
+					/** @type {Promise<void>[]} */
+					const jobs = [];
+					for (const [tag, attribute] of attributes) {
+						for (const element of Array.from(newDocument.querySelectorAll(`${tag}[${attribute}]`))) {
+							let absolute;
+							try {
+								absolute = new URL(element.getAttribute(attribute) ?? '', base).href;
+							} catch {
+								continue;
+							}
+							if (isResource(absolute)) {
+								jobs.push(toBlobUrl(absolute).then(blobUrl => {
+									if (blobUrl) {
+										element.setAttribute(attribute, blobUrl);
+									}
+								}));
+							}
+						}
+					}
+					for (const style of Array.from(newDocument.querySelectorAll('style'))) {
+						jobs.push(rewriteCss(style.textContent ?? '', base).then(text => { style.textContent = text; }));
+					}
+					for (const element of Array.from(newDocument.querySelectorAll('[style]'))) {
+						jobs.push(rewriteCss(element.getAttribute('style') ?? '', base).then(text => element.setAttribute('style', text)));
+					}
+					await Promise.all(jobs);
+
+					const csp = newDocument.querySelector('meta[http-equiv="Content-Security-Policy"]');
+					if (csp) {
+						csp.setAttribute('content', allowBlobs(csp.getAttribute('content') ?? '', cspSource));
+					}
+					if (allowScripts) {
+						const script = newDocument.createElement('script');
+						script.textContent = contentScript;
+						newDocument.head.prepend(script);
+					}
+					return '<!DOCTYPE html>\n' + newDocument.documentElement.outerHTML;
+				}
+			};
+		})() : undefined;
 
 		/**
 		 * @param {HTMLDocument?} document
@@ -989,7 +1264,13 @@
 				}
 
 				const options = data.options;
-				const newDocument = toContentHtml(data);
+				let newDocument = toContentHtml(data);
+				if (haikuResources) {
+					newDocument = await haikuResources.rewriteDocument(newDocument, data.cspSource, !!options.allowScripts);
+					if (currentUpdateId !== updateId) {
+						return;
+					}
+				}
 
 				const initialStyleVersion = styleVersion;
 
