@@ -1,0 +1,30 @@
+/* Code - OSS's launcher on air/OS (Haiku): Aurora's aurora-host with the
+   app's name, icon and signature (see Aurora's host/Launcher.h). Multiple
+   launch: opening a file starts the app again, and the first instance takes
+   the file over its own instance socket. */
+
+resource app_signature "application/x-vnd.code-oss";
+
+resource app_flags B_MULTIPLE_LAUNCH;
+
+resource app_version {
+	major  = 1,
+	middle = 142,
+	minor  = 0,
+	variety = B_APPV_FINAL,
+	internal = 0,
+	short_info = "Code - OSS",
+	long_info = "Code - OSS, the open source build of Visual Studio Code, running on air/OS with Aurora"
+};
+
+/* Text and source files open in it, and its own links (code-oss://). */
+resource file_types message {
+	"types" = "text",
+	"types" = "application/json",
+	"types" = "application/javascript",
+	"types" = "application/x-sh",
+	"types" = "application/xml",
+	"types" = "application/x-vnd.Be.URL.code-oss"
+};
+
+resource(101, "BEOS:ICON") #'VICN' import "CodeOSS.hvif";

@@ -1,0 +1,533 @@
+diff -ruN a/binding.gyp b/binding.gyp
+--- a/binding.gyp
++++ b/binding.gyp
+@@ -36,7 +36,7 @@
+             "ARCHS": ["arm64"]
+           }
+         }],
+-        ['OS=="linux" or OS=="android"', {
++        ['(OS=="linux" or OS=="android") and haiku==0', {
+           "sources": [
+             "src/watchman/BSER.cc",
+             "src/watchman/WatchmanBackend.cc",
+@@ -85,6 +85,21 @@
+             }
+           }
+         }],
++        # gyp calls Haiku "linux": the node monitor there, and no libssp.
++        ['haiku==1', {
++          "sources": [
++            "src/shared/BruteForceBackend.cc",
++            "src/unix/fts.cc",
++            "src/haiku/HaikuBackend.cc"
++          ],
++          "defines": [
++            "HAIKU_NODE_MONITOR",
++            "BRUTE_FORCE",
++            "_DEFAULT_SOURCE"
++          ],
++          "libraries": ["-lbe", "-lbsd"],
++          "cflags!": ["-fstack-protector-strong"]
++        }],
+         ['OS=="freebsd"', {
+           "sources": [
+             "src/watchman/BSER.cc",
+@@ -104,6 +119,7 @@
+   ],
+   "variables": {
+     "openssl_fips": "",
+-    "node_use_dtrace": "false"
++    "node_use_dtrace": "false",
++    "haiku%": "<!(node -p \"+(process.platform === 'haiku')\")"
+   }
+ }
+diff -ruN a/src/Backend.cc b/src/Backend.cc
+--- a/src/Backend.cc
++++ b/src/Backend.cc
+@@ -16,6 +16,9 @@
+ #ifdef __wasm32__
+ #include "wasm/WasmBackend.hh"
+ #endif
++#ifdef HAIKU_NODE_MONITOR
++#include "haiku/HaikuBackend.hh"
++#endif
+ #include "shared/BruteForceBackend.hh"
+ 
+ #include "Backend.hh"
+@@ -61,6 +64,11 @@
+       return std::make_shared<WasmBackend>();
+     }
+   #endif
++  #ifdef HAIKU_NODE_MONITOR
++    if (backend == "haiku" || backend == "default") {
++      return std::make_shared<HaikuBackend>();
++    }
++  #endif
+   if (backend == "brute-force" || backend == "default") {
+     return std::make_shared<BruteForceBackend>();
+   }
+diff -ruN a/src/haiku/HaikuBackend.cc b/src/haiku/HaikuBackend.cc
+--- a/src/haiku/HaikuBackend.cc	1970-01-01 11:00:00.000000000 +1100
++++ b/src/haiku/HaikuBackend.cc
+@@ -0,0 +1,395 @@
++#include <memory>
++#include <sys/resource.h>
++#include <sys/stat.h>
++#include <fts.h>
++#include <NodeMonitor.h>
++#include <Node.h>
++#include "HaikuBackend.hh"
++
++// Watching on Haiku, with the node monitor: every directory of a
++// subscription has one monitor, for its entries (B_WATCH_DIRECTORY) and for
++// changes to the files in it (B_WATCH_STAT | B_WATCH_CHILDREN), whose
++// messages arrive at a looper of the backend.
++
++#define WATCH_FLAGS (B_WATCH_DIRECTORY | B_WATCH_STAT | B_WATCH_CHILDREN)
++#define CONVERT_TIME(ts) ((uint64_t)ts.tv_sec * 1000000000 + ts.tv_nsec)
++
++class HaikuLooper : public BLooper {
++public:
++  HaikuLooper(HaikuBackend *backend) : BLooper("parcel watcher"), mBackend(backend) {}
++  void MessageReceived(BMessage *message) override {
++    if (message->what == B_NODE_MONITOR) {
++      mBackend->handleMessage(message);
++    } else {
++      BLooper::MessageReceived(message);
++    }
++  }
++private:
++  HaikuBackend *mBackend;
++};
++
++static std::string dirName(const std::string &path) {
++  size_t slash = path.rfind('/');
++  return slash == 0 ? "/" : path.substr(0, slash);
++}
++
++void HaikuBackend::start() {
++  // A monitor per directory: a project can have more than the default
++  // number a team may hold.
++  struct rlimit limit;
++  if (getrlimit(RLIMIT_NOVMON, &limit) == 0 && limit.rlim_cur < limit.rlim_max) {
++    limit.rlim_cur = limit.rlim_max;
++    setrlimit(RLIMIT_NOVMON, &limit);
++  }
++
++  mLooper = new HaikuLooper(this);
++  mLooper->Run();
++  notifyStarted();
++
++  mStopSignal.wait();
++  stop_watching(mLooper, mLooper);
++  if (mLooper->Lock()) {
++    mLooper->Quit();
++  }
++  mLooper = nullptr;
++  mEndedSignal.notify();
++}
++
++HaikuBackend::~HaikuBackend() {
++  mStopSignal.notify();
++  mEndedSignal.wait();
++}
++
++// This function is called by Backend::watch which takes a lock on mMutex
++void HaikuBackend::subscribe(WatcherRef watcher) {
++  // Build a full directory tree recursively, and watch each directory.
++  std::shared_ptr<DirTree> tree = getTree(watcher);
++
++  struct stat root;
++  if (lstat(watcher->mDir.c_str(), &root) != 0) {
++    throw WatcherError(std::string("Unable to read '") + watcher->mDir + "': " + strerror(errno), watcher);
++  }
++  std::string parentPath = dirName(watcher->mDir);
++  struct stat parentStat;
++  HaikuNode parent = {-1, -1};
++  if (lstat(parentPath.c_str(), &parentStat) == 0) {
++    parent = {parentStat.st_dev, parentStat.st_ino};
++  }
++
++  std::unordered_map<std::string, HaikuNode> directories;
++  directories.emplace(watcher->mDir, HaikuNode{root.st_dev, root.st_ino});
++  for (auto it = tree->entries.begin(); it != tree->entries.end(); it++) {
++    struct stat st;
++    if (lstat(it->second.path.c_str(), &st) != 0) {
++      continue;
++    }
++    if (it->second.isDir) {
++      directories.emplace(it->second.path, HaikuNode{st.st_dev, st.st_ino});
++    }
++  }
++
++  for (auto it = tree->entries.begin(); it != tree->entries.end(); it++) {
++    const std::string &path = it->second.path;
++    auto found = directories.find(path == watcher->mDir ? path : dirName(path));
++    HaikuNode container = path == watcher->mDir ? parent
++      : (found != directories.end() ? found->second : HaikuNode{-1, -1});
++    if (it->second.isDir) {
++      if (!watchDir(watcher, path, tree, container)) {
++        throw WatcherError(std::string("watch_node on '") + path + "' failed: " + strerror(errno), watcher);
++      }
++    } else {
++      struct stat st;
++      if (lstat(path.c_str(), &st) == 0) {
++        mNodes[HaikuNode{st.st_dev, st.st_ino}] = HaikuNodeInfo{path, container, false};
++      }
++    }
++  }
++
++  // The root reports its own removal and moves.
++  node_ref rootRef;
++  rootRef.device = root.st_dev;
++  rootRef.node = root.st_ino;
++  watch_node(&rootRef, WATCH_FLAGS | B_WATCH_NAME, mLooper, mLooper);
++}
++
++bool HaikuBackend::watchDir(WatcherRef watcher, std::string path, std::shared_ptr<DirTree> tree, HaikuNode parent) {
++  struct stat st;
++  if (lstat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
++    return false;
++  }
++
++  HaikuNode key = {st.st_dev, st.st_ino};
++  auto range = mDirectories.equal_range(key);
++  for (auto it = range.first; it != range.second; it++) {
++    if (it->second->watcher.get() == watcher.get() && it->second->path == path) {
++      return true;
++    }
++  }
++  if (range.first == range.second) {
++    node_ref ref;
++    ref.device = st.st_dev;
++    ref.node = st.st_ino;
++    status_t status = watch_node(&ref, WATCH_FLAGS, mLooper, mLooper);
++    if (status != B_OK) {
++      errno = status;
++      return false;
++    }
++  }
++
++  std::shared_ptr<HaikuSubscription> sub = std::make_shared<HaikuSubscription>();
++  sub->tree = tree;
++  sub->path = path;
++  sub->watcher = watcher;
++  mDirectories.emplace(key, sub);
++  mNodes[key] = HaikuNodeInfo{path, parent, true};
++  return true;
++}
++
++// Stops watching a directory or file that is gone or moved, and everything
++// under it.
++void HaikuBackend::unwatchPath(std::string path) {
++  std::string pathStart = path + "/";
++  for (auto it = mNodes.begin(); it != mNodes.end();) {
++    if (it->second.path == path || it->second.path.rfind(pathStart, 0) == 0) {
++      if (it->second.isDir) {
++        mDirectories.erase(it->first);
++        node_ref ref;
++        ref.device = it->first.device;
++        ref.node = it->first.node;
++        watch_node(&ref, B_STOP_WATCHING, mLooper, mLooper);
++      }
++      it = mNodes.erase(it);
++    } else {
++      it++;
++    }
++  }
++}
++
++// Adds a directory that appeared (created, or moved in) and what is in it.
++void HaikuBackend::addTree(WatcherRef watcher, std::string path, std::shared_ptr<DirTree> tree, HaikuNode parent, bool created) {
++  char *paths[2] {(char *)path.c_str(), NULL};
++  FTS *fts = fts_open(paths, FTS_NOCHDIR | FTS_PHYSICAL, NULL);
++  if (!fts) {
++    return;
++  }
++
++  std::unordered_map<std::string, HaikuNode> directories;
++  FTSENT *node;
++  while ((node = fts_read(fts)) != NULL) {
++    if (node->fts_errno || node->fts_info == FTS_DP) {
++      continue;
++    }
++    std::string entryPath = node->fts_path;
++    if (watcher->isIgnored(entryPath)) {
++      fts_set(fts, node, FTS_SKIP);
++      continue;
++    }
++    bool isDir = (node->fts_info & FTS_D) == FTS_D;
++    auto found = directories.find(dirName(entryPath));
++    HaikuNode container = entryPath == path || found == directories.end() ? parent : found->second;
++    HaikuNode key = {node->fts_statp->st_dev, node->fts_statp->st_ino};
++    tree->add(entryPath, CONVERT_TIME(node->fts_statp->st_mtim), isDir);
++    if (entryPath != path || created) {
++      watcher->mEvents.create(entryPath);
++    }
++    if (isDir) {
++      directories.emplace(entryPath, key);
++      watchDir(watcher, entryPath, tree, container);
++    } else {
++      mNodes[key] = HaikuNodeInfo{entryPath, container, false};
++    }
++  }
++  fts_close(fts);
++}
++
++void HaikuBackend::entryCreated(std::shared_ptr<HaikuSubscription> sub, const char *name, HaikuNode node) {
++  std::string path = sub->path + "/" + name;
++  WatcherRef watcher = sub->watcher;
++  if (watcher->isIgnored(path)) {
++    return;
++  }
++
++  struct stat st;
++  // Use lstat to avoid resolving symbolic links that we cannot watch anyway
++  if (lstat(path.c_str(), &st) != 0) {
++    return;
++  }
++
++  struct stat dirStat;
++  HaikuNode parent = {-1, -1};
++  if (lstat(sub->path.c_str(), &dirStat) == 0) {
++    parent = {dirStat.st_dev, dirStat.st_ino};
++  }
++
++  if (S_ISDIR(st.st_mode)) {
++    addTree(watcher, path, sub->tree, parent, true);
++  } else {
++    watcher->mEvents.create(path);
++    sub->tree->add(path, CONVERT_TIME(st.st_mtim), false);
++    mNodes[HaikuNode{st.st_dev, st.st_ino}] = HaikuNodeInfo{path, parent, false};
++  }
++}
++
++void HaikuBackend::entryRemoved(std::shared_ptr<HaikuSubscription> sub, const char *name) {
++  std::string path = sub->path + "/" + name;
++  WatcherRef watcher = sub->watcher;
++  if (watcher->isIgnored(path)) {
++    return;
++  }
++
++  watcher->mEvents.remove(path);
++  sub->tree->remove(path);
++}
++
++bool HaikuBackend::statChanged(HaikuNode node, std::unordered_set<WatcherRef> &watchers) {
++  auto info = mNodes.find(node);
++  // A directory's own changes follow its entries, which come by themselves.
++  if (info == mNodes.end() || info->second.isDir) {
++    return false;
++  }
++
++  std::string path = info->second.path;
++  struct stat st;
++  if (stat(path.c_str(), &st) != 0) {
++    return false;
++  }
++
++  bool changed = false;
++  auto range = mDirectories.equal_range(info->second.parent);
++  for (auto it = range.first; it != range.second; it++) {
++    WatcherRef watcher = it->second->watcher;
++    if (watcher->isIgnored(path)) {
++      continue;
++    }
++    watcher->mEvents.update(path);
++    it->second->tree->update(path, CONVERT_TIME(st.st_mtim));
++    watchers.insert(watcher);
++    changed = true;
++  }
++  return changed;
++}
++
++void HaikuBackend::handleMessage(BMessage *message) {
++  int32 opcode;
++  if (message->FindInt32("opcode", &opcode) != B_OK) {
++    return;
++  }
++
++  // Track all of the watchers that are touched so we can notify them at the end of the events.
++  std::unordered_set<WatcherRef> watchers;
++  {
++    std::unique_lock<std::mutex> lock(mMutex);
++    dev_t device = message->GetInt32("device", -1);
++    ino_t node = message->GetInt64("node", -1);
++
++    switch (opcode) {
++      case B_ENTRY_CREATED:
++      case B_ENTRY_REMOVED: {
++        HaikuNode directory = {device, message->GetInt64("directory", -1)};
++        const char *name = message->GetString("name", NULL);
++        if (!name) {
++          break;
++        }
++        std::vector<std::shared_ptr<HaikuSubscription>> subs;
++        auto range = mDirectories.equal_range(directory);
++        for (auto it = range.first; it != range.second; it++) {
++          subs.push_back(it->second);
++        }
++        if (opcode == B_ENTRY_REMOVED && !subs.empty()) {
++          unwatchPath(subs[0]->path + "/" + name);
++        }
++        for (auto &sub : subs) {
++          if (opcode == B_ENTRY_CREATED) {
++            entryCreated(sub, name, HaikuNode{device, node});
++          } else {
++            entryRemoved(sub, name);
++          }
++          watchers.insert(sub->watcher);
++        }
++        break;
++      }
++
++      case B_ENTRY_MOVED: {
++        HaikuNode from = {device, message->GetInt64("from directory", -1)};
++        HaikuNode to = {device, message->GetInt64("to directory", -1)};
++        const char *fromName = message->GetString("from name", NULL);
++        const char *name = message->GetString("name", NULL);
++        HaikuNode moved = {message->GetInt32("node device", device), node};
++
++        // The root of a subscription moved away.
++        auto info = mNodes.find(moved);
++        if (info != mNodes.end() && info->second.isDir) {
++          std::string oldPath = info->second.path;
++          auto range = mDirectories.equal_range(moved);
++          for (auto it = range.first; it != range.second; it++) {
++            if (it->second->path == it->second->watcher->mDir) {
++              it->second->watcher->mEvents.remove(oldPath);
++              watchers.insert(it->second->watcher);
++            }
++          }
++        }
++
++        std::vector<std::shared_ptr<HaikuSubscription>> fromSubs, toSubs;
++        auto range = mDirectories.equal_range(from);
++        for (auto it = range.first; it != range.second; it++) {
++          fromSubs.push_back(it->second);
++        }
++        range = mDirectories.equal_range(to);
++        for (auto it = range.first; it != range.second; it++) {
++          toSubs.push_back(it->second);
++        }
++        if (fromName && !fromSubs.empty()) {
++          unwatchPath(fromSubs[0]->path + "/" + fromName);
++          for (auto &sub : fromSubs) {
++            entryRemoved(sub, fromName);
++            watchers.insert(sub->watcher);
++          }
++        }
++        if (name) {
++          for (auto &sub : toSubs) {
++            entryCreated(sub, name, moved);
++            watchers.insert(sub->watcher);
++          }
++        }
++        break;
++      }
++
++      case B_STAT_CHANGED:
++        statChanged(HaikuNode{device, node}, watchers);
++        break;
++    }
++  }
++
++  for (auto it = watchers.begin(); it != watchers.end(); it++) {
++    (*it)->notify();
++  }
++}
++
++// This function is called by Backend::unwatch which takes a lock on mMutex
++void HaikuBackend::unsubscribe(WatcherRef watcher) {
++  // Find any subscriptions pointing to this watcher, and remove them.
++  for (auto it = mDirectories.begin(); it != mDirectories.end();) {
++    if (it->second->watcher.get() == watcher.get()) {
++      HaikuNode key = it->first;
++      it = mDirectories.erase(it);
++      if (mDirectories.count(key) == 0) {
++        node_ref ref;
++        ref.device = key.device;
++        ref.node = key.node;
++        watch_node(&ref, B_STOP_WATCHING, mLooper, mLooper);
++        mNodes.erase(key);
++      }
++    } else {
++      it++;
++    }
++  }
++
++  // Files no remaining directory watches.
++  for (auto it = mNodes.begin(); it != mNodes.end();) {
++    if (!it->second.isDir && mDirectories.count(it->second.parent) == 0) {
++      it = mNodes.erase(it);
++    } else {
++      it++;
++    }
++  }
++}
+diff -ruN a/src/haiku/HaikuBackend.hh b/src/haiku/HaikuBackend.hh
+--- a/src/haiku/HaikuBackend.hh	1970-01-01 11:00:00.000000000 +1100
++++ b/src/haiku/HaikuBackend.hh
+@@ -0,0 +1,62 @@
++#ifndef HAIKU_BACKEND_H
++#define HAIKU_BACKEND_H
++
++#include <unordered_map>
++#include <Looper.h>
++#include "../shared/BruteForceBackend.hh"
++#include "../DirTree.hh"
++#include "../Signal.hh"
++
++// A node on a volume, as Haiku's node monitor names it.
++struct HaikuNode {
++  dev_t device;
++  ino_t node;
++  bool operator==(const HaikuNode &other) const {
++    return device == other.device && node == other.node;
++  }
++};
++
++struct HaikuNodeHash {
++  size_t operator()(const HaikuNode &key) const {
++    return std::hash<int64_t>()(key.node) ^ (std::hash<int32_t>()(key.device) << 1);
++  }
++};
++
++// One watched directory of a subscription.
++struct HaikuSubscription {
++  std::shared_ptr<DirTree> tree;
++  std::string path;
++  WatcherRef watcher;
++};
++
++// What the backend knows of a node it watches: its path and the directory
++// it is in, since a stat change names the node only.
++struct HaikuNodeInfo {
++  std::string path;
++  HaikuNode parent;
++  bool isDir;
++};
++
++class HaikuBackend : public BruteForceBackend {
++public:
++  void start() override;
++  ~HaikuBackend();
++  void subscribe(WatcherRef watcher) override;
++  void unsubscribe(WatcherRef watcher) override;
++  void handleMessage(BMessage *message);
++private:
++  BLooper *mLooper = nullptr;
++  std::unordered_multimap<HaikuNode, std::shared_ptr<HaikuSubscription>, HaikuNodeHash> mDirectories;
++  std::unordered_map<HaikuNode, HaikuNodeInfo, HaikuNodeHash> mNodes;
++  Signal mStopSignal;
++  Signal mEndedSignal;
++
++  bool watchDir(WatcherRef watcher, std::string path, std::shared_ptr<DirTree> tree, HaikuNode parent);
++  void unwatchPath(std::string path);
++  void addTree(WatcherRef watcher, std::string path, std::shared_ptr<DirTree> tree, HaikuNode parent, bool created);
++  void entryCreated(std::shared_ptr<HaikuSubscription> sub, const char *name, HaikuNode node);
++  void entryRemoved(std::shared_ptr<HaikuSubscription> sub, const char *name);
++  bool statChanged(HaikuNode node, std::unordered_set<WatcherRef> &watchers);
++};
++
++#endif

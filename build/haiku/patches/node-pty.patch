@@ -1,0 +1,156 @@
+diff -ru a/binding.gyp b/binding.gyp
+--- a/binding.gyp
++++ b/binding.gyp
+@@ -1,4 +1,8 @@
+ {
++  'variables': {
++    # gyp calls Haiku "linux"
++    'haiku%': '<!(node -p "+(process.platform === \'haiku\')")',
++  },
+   'target_defaults': {
+     'dependencies': [
+       "<!(node -p \"require('node-addon-api').targets\"):node_addon_api_except",
+@@ -30,6 +34,9 @@
+       }, {
+         'cflags': ['-O2', '-fstack-protector-strong'],
+       }],
++      ['haiku==1', {
++        'cflags!': ['-fstack-protector-strong'],
++      }],
+     ],
+   },
+   'conditions': [
+@@ -73,6 +80,21 @@
+                 '-lutil'
+               ]
+             }],
++            # Haiku has openpty() and forkpty() in libbsd, and no libssp.
++            ['haiku==1', {
++              'libraries!': [
++                '-lutil'
++              ],
++              'libraries': [
++                '-lbsd'
++              ],
++              'defines': [
++                '_DEFAULT_SOURCE'
++              ],
++              'cflags!': [
++                '-fstack-protector-strong'
++              ]
++            }],
+             ['OS=="linux"', {
+               'variables': {
+                 'sysroot%': '<!(node -p "process.env.SYSROOT_PATH || \'\'")',
+diff -ru a/src/unix/pty.cc b/src/unix/pty.cc
+--- a/src/unix/pty.cc
++++ b/src/unix/pty.cc
+@@ -47,6 +47,9 @@
+ #elif defined(__OpenBSD__)
+ #include <util.h>
+ #include <termios.h>
++#elif defined(__HAIKU__)
++#include <pty.h>
++#include <termios.h>
+ #endif
+ 
+ /* Some platforms name VWERASE and VDISCARD differently */
+@@ -61,6 +64,8 @@
+ #if defined(__linux__)
+ #include <stdio.h>
+ #include <stdint.h>
++#elif defined(__HAIKU__)
++#include <OS.h>
+ #elif defined(__APPLE__)
+ #include <libproc.h>
+ #include <os/availability.h>
+@@ -112,7 +117,7 @@
+   int exit_code = 0, signal_code = 0;
+ };
+ 
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__HAIKU__)
+ 
+ static int
+ SetCloseOnExec(int fd) {
+@@ -350,7 +355,10 @@
+   // termios
+   struct termios t = termios();
+   struct termios *term = &t;
+-  term->c_iflag = ICRNL | IXON | IXANY | IMAXBEL | BRKINT;
++  term->c_iflag = ICRNL | IXON | IXANY | BRKINT;
++#if defined(IMAXBEL)
++  term->c_iflag |= IMAXBEL;
++#endif
+   if (info[8].As<Napi::Boolean>().Value()) {
+ #if defined(IUTF8)
+     term->c_iflag |= IUTF8;
+@@ -358,22 +366,33 @@
+   }
+   term->c_oflag = OPOST | ONLCR;
+   term->c_cflag = CREAD | CS8 | HUPCL;
+-  term->c_lflag = ICANON | ISIG | IEXTEN | ECHO | ECHOE | ECHOK | ECHOKE | ECHOCTL;
++  term->c_lflag = ICANON | ISIG | IEXTEN | ECHO | ECHOE | ECHOK | ECHOCTL;
++#if defined(ECHOKE)
++  term->c_lflag |= ECHOKE;
++#endif
+ 
+   term->c_cc[VEOF] = 4;
+   term->c_cc[VEOL] = -1;
+   term->c_cc[VEOL2] = -1;
+   term->c_cc[VERASE] = 0x7f;
++#if defined(VWERASE)
+   term->c_cc[VWERASE] = 23;
++#endif
+   term->c_cc[VKILL] = 21;
++#if defined(VREPRINT)
+   term->c_cc[VREPRINT] = 18;
++#endif
+   term->c_cc[VINTR] = 3;
+   term->c_cc[VQUIT] = 0x1c;
+   term->c_cc[VSUSP] = 26;
+   term->c_cc[VSTART] = 17;
+   term->c_cc[VSTOP] = 19;
++#if defined(VLNEXT)
+   term->c_cc[VLNEXT] = 22;
++#endif
++#if defined(VDISCARD)
+   term->c_cc[VDISCARD] = 15;
++#endif
+   term->c_cc[VMIN] = 1;
+   term->c_cc[VTIME] = 0;
+ 
+@@ -695,6 +714,33 @@
+   return buf;
+ }
+ 
++#elif defined(__HAIKU__)
++
++/**
++ * The foreground process of the terminal: the team of its process group,
++ * named by the program it runs.
++ */
++static char *
++pty_getproc(int fd, char *tty) {
++  pid_t pgrp = tcgetpgrp(fd);
++  if (pgrp == -1) {
++    return NULL;
++  }
++
++  team_info info;
++  if (get_team_info(pgrp, &info) != B_OK) {
++    return NULL;
++  }
++
++  char *program = info.args;
++  char *end = strchr(program, ' ');
++  if (end) {
++    *end = '\0';
++  }
++  char *slash = strrchr(program, '/');
++  return strdup(slash ? slash + 1 : program);
++}
++
+ #elif defined(__APPLE__)
+ 
+ static char *

@@ -244,53 +244,64 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			.pipe(filter(depFilterPattern))
 			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, '.moduleignore')))
 			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, `.moduleignore.${process.platform}`)));
-		ensureCopilotPlatformPackage(platform, arch);
-		const copilotRuntimePrebuilds = gulp.src(getCopilotRuntimePrebuildFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
-		ensureOSProxyResolverPlatformPackage(platform, arch);
-		const osProxyResolverPlatformPackage = gulp.src(getOSProxyResolverPlatformFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
-		const deps = es.merge(cleanedDeps, copilotRuntimePrebuilds, osProxyResolverPlatformPackage)
-			.pipe(filter(getCopilotExcludeFilter(platform, arch)))
-			.pipe(filter(getCopilotTgrepExcludeFilter(platform, arch)))
-			.pipe(filter(getRipgrepExcludeFilter(platform, arch)))
-			.pipe(filter(getFoundryLocalExcludeFilter()))
-			.pipe(filter(getOSProxyResolverExcludeFilter(platform, arch)))
+		// Haiku (air/OS) runs on Aurora: plain Node.js modules, no archive, and
+		// none of the prebuilt binaries for other systems. Native modules are
+		// built for Haiku when the package is made (build/haiku).
+		const deps = platform === 'haiku' ? cleanedDeps
+			.pipe(filter(getHaikuDependencyFilter(), { dot: true }))
 			.pipe(jsFilter)
 			.pipe(util.rewriteSourceMappingURL(sourceMappingURLBase))
-			.pipe(jsFilter.restore)
-			.pipe(createAsar(path.join(process.cwd(), 'node_modules'), [
-				'**/*.node',
-				'**/@vscode/ripgrep-universal/bin/**',
-				// The SDK runtime wrapper and native module must remain adjacent on disk.
-				'**/@github/copilot-sdk-{darwin,linux,linuxmusl,win32}-*/**',
-				// The Dev Container CLI is spawned as an external Node process,
-				// so its bundled entrypoint must be available outside the ASAR.
-				'**/@devcontainers/cli/**',
-				'**/node-pty/build/Release/*',
-				'**/node-pty/build/Release/conpty/*',
-				'**/node-pty/lib/worker/conoutSocketWorker.js',
-				'**/node-pty/lib/shared/conout.js',
-				// node-pty spawns `conoutSocketWorker.js` as a Worker from the unpacked
-				// tree (Windows only). Unpack node-pty's `package.json` alongside it so
-				// Node finds a `package.json` without `"type": "module"` when walking up
-				// from the worker file. Otherwise the lookup reaches the app's own
-				// `package.json` (`"type": "module"`), the CommonJS worker is loaded as
-				// ESM and throws `exports is not defined`, the worker never signals ready,
-				// and node-pty blocks the pty host on `ConnectNamedPipe`.
-				'**/node-pty/package.json',
-				'**/*.wasm',
-				'**/@vscode/vsce-sign/bin/*',
-			], [
-				'**/*.mk',
-			], [
-				'node_modules/vsda/**', // retain copy of `vsda` in node_modules for internal use
-				// The sandbox runtime is spawned as a standalone Node subprocess (no ASAR
-				// resolution hook), so it and its transitive JS dependencies must remain as
-				// real files under `node_modules`. Keep them duplicated out of the archive.
-				'node_modules/@vscode/sandbox-runtime/**', // includes its nested `commander`
-				'node_modules/@pondwader/socks5-server/**',
-				'node_modules/shell-quote/**',
-				'node_modules/zod/**'
-			], 'node_modules.asar'));
+			.pipe(jsFilter.restore) : packagedDependencies(cleanedDeps);
+
+		function packagedDependencies(cleanedDeps: NodeJS.ReadWriteStream): NodeJS.ReadWriteStream {
+			ensureCopilotPlatformPackage(platform, arch);
+			const copilotRuntimePrebuilds = gulp.src(getCopilotRuntimePrebuildFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
+			ensureOSProxyResolverPlatformPackage(platform, arch);
+			const osProxyResolverPlatformPackage = gulp.src(getOSProxyResolverPlatformFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
+			return es.merge(cleanedDeps, copilotRuntimePrebuilds, osProxyResolverPlatformPackage)
+				.pipe(filter(getCopilotExcludeFilter(platform, arch)))
+				.pipe(filter(getCopilotTgrepExcludeFilter(platform, arch)))
+				.pipe(filter(getRipgrepExcludeFilter(platform, arch)))
+				.pipe(filter(getFoundryLocalExcludeFilter()))
+				.pipe(filter(getOSProxyResolverExcludeFilter(platform, arch)))
+				.pipe(jsFilter)
+				.pipe(util.rewriteSourceMappingURL(sourceMappingURLBase))
+				.pipe(jsFilter.restore)
+				.pipe(createAsar(path.join(process.cwd(), 'node_modules'), [
+					'**/*.node',
+					'**/@vscode/ripgrep-universal/bin/**',
+					// The SDK runtime wrapper and native module must remain adjacent on disk.
+					'**/@github/copilot-sdk-{darwin,linux,linuxmusl,win32}-*/**',
+					// The Dev Container CLI is spawned as an external Node process,
+					// so its bundled entrypoint must be available outside the ASAR.
+					'**/@devcontainers/cli/**',
+					'**/node-pty/build/Release/*',
+					'**/node-pty/build/Release/conpty/*',
+					'**/node-pty/lib/worker/conoutSocketWorker.js',
+					'**/node-pty/lib/shared/conout.js',
+					// node-pty spawns `conoutSocketWorker.js` as a Worker from the unpacked
+					// tree (Windows only). Unpack node-pty's `package.json` alongside it so
+					// Node finds a `package.json` without `"type": "module"` when walking up
+					// from the worker file. Otherwise the lookup reaches the app's own
+					// `package.json` (`"type": "module"`), the CommonJS worker is loaded as
+					// ESM and throws `exports is not defined`, the worker never signals ready,
+					// and node-pty blocks the pty host on `ConnectNamedPipe`.
+					'**/node-pty/package.json',
+					'**/*.wasm',
+					'**/@vscode/vsce-sign/bin/*',
+				], [
+					'**/*.mk',
+				], [
+					'node_modules/vsda/**', // retain copy of `vsda` in node_modules for internal use
+					// The sandbox runtime is spawned as a standalone Node subprocess (no ASAR
+					// resolution hook), so it and its transitive JS dependencies must remain as
+					// real files under `node_modules`. Keep them duplicated out of the archive.
+					'node_modules/@vscode/sandbox-runtime/**', // includes its nested `commander`
+					'node_modules/@pondwader/socks5-server/**',
+					'node_modules/shell-quote/**',
+					'node_modules/zod/**'
+				], 'node_modules.asar'));
+		}
 
 		const mergeStreams = [
 			packageJsonStream,
@@ -341,6 +352,11 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			const policyDest = gulp.src('.build/policies/linux/**', { base: '.build/policies/linux' })
 				.pipe(rename(f => f.dirname = `policies/${f.dirname}`));
 			all = es.merge(all, gulp.src('resources/linux/code.png', { base: '.' }), policyDest);
+		} else if (platform === 'haiku') {
+			const shortcut = gulp.src('resources/haiku/bin/code.sh', { base: '.' })
+				.pipe(replace('@@NAME@@', product.nameShort))
+				.pipe(rename('bin/' + product.applicationName));
+			all = es.merge(all, gulp.src('resources/linux/code.png', { base: '.' }), shortcut);
 		} else if (platform === 'darwin') {
 			const shortcut = gulp.src('resources/darwin/bin/code.sh')
 				.pipe(replace('@@APPNAME@@', product.applicationName))
@@ -358,10 +374,21 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			ffmpegChromium: false
 		};
 
-		let result: NodeJS.ReadWriteStream = all
+		const app = all
 			.pipe(util.skipDirectories())
 			.pipe(util.fixWin32DirectoryPermissions())
-			.pipe(filter(['**', '!**/.github/**'], { dot: true })) // https://github.com/microsoft/vscode/issues/116523
+			.pipe(filter(['**', '!**/.github/**'], { dot: true })); // https://github.com/microsoft/vscode/issues/116523
+
+		if (platform === 'haiku') {
+			// The app folder itself: Aurora is its Electron.
+			return inlineMeta(app.pipe(util.setExecutableBit(['bin/*'])), {
+				targetPaths: getBootstrapEntryPointsForTarget('desktop').map(entry => `${entry}.js`),
+				packageJsonFn: () => packageJsonContents,
+				productJsonFn: () => productJsonContents
+			}).pipe(vfs.dest(destination));
+		}
+
+		let result: NodeJS.ReadWriteStream = app
 			.pipe(electron(electronConfig))
 			.pipe(filter([
 				'**',
@@ -456,6 +483,29 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 	};
 	task.taskName = `package-${platform}-${arch}`;
 	return task;
+}
+
+/**
+ * What the Haiku package keeps of the production dependencies: everything
+ * but the prebuilt binaries for other systems.
+ */
+function getHaikuDependencyFilter(): string[] {
+	return [
+		'**',
+		'!**/node_modules/@github/copilot-sdk-*/**',
+		'!**/node_modules/@github/copilot/tgrep/bin/**',
+		'!**/node_modules/@github/copilot/sdk/tgrep/bin/**',
+		'!**/node_modules/@vscode/ripgrep-universal/bin/**',
+		'!**/node_modules/@vscode/os-proxy-resolver-*/**',
+		'!**/node_modules/@vscode/windows-*/**',
+		'!**/node_modules/windows-foreground-love/**',
+		'!**/node_modules/foundry-local-sdk/prebuilds/**',
+		'!**/node_modules/*/prebuilds/**',
+		'!**/node_modules/@*/*/prebuilds/**',
+		'!**/node_modules/**/build/Release/**',
+		'!**/node_modules/**/build/Debug/**',
+		'!**/*.node',
+	];
 }
 
 function hasAuthenticodeSignature(filePath: string): Promise<boolean> {
@@ -569,6 +619,7 @@ const BUILD_TARGETS = [
 	{ platform: 'linux', arch: 'x64' },
 	{ platform: 'linux', arch: 'armhf' },
 	{ platform: 'linux', arch: 'arm64' },
+	{ platform: 'haiku', arch: 'x64' },
 ];
 BUILD_TARGETS.forEach(buildTarget => {
 	const dashed = (str: string) => (str ? `-${str}` : ``);
@@ -584,8 +635,10 @@ BUILD_TARGETS.forEach(buildTarget => {
 			compileNativeExtensionsBuildTask,
 			util.rimraf(path.join(buildRoot, destinationFolderName)),
 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
-			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName)
 		];
+		if (platform !== 'haiku') {
+			packageTasks.push(prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName));
+		}
 
 		if (platform === 'win32') {
 			packageTasks.push(patchWin32DependenciesTask(destinationFolderName));
