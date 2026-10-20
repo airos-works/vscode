@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Modifiers } from './keybindings.js';
-import { OperatingSystem } from './platform.js';
+import { isHaiku, OperatingSystem } from './platform.js';
 import * as nls from '../../nls.js';
 
 export interface ModifierLabels {
@@ -67,7 +67,7 @@ export const UILabelProvider = new ModifierLabelProvider(
 		metaKey: nls.localize({ key: 'windowsKey', comment: ['This is the short form for the Windows key on the keyboard'] }, "Windows"),
 		separator: '+',
 	},
-	{
+	isHaiku ? haikuModifierLabels() : {
 		ctrlKey: nls.localize({ key: 'ctrlKey', comment: ['This is the short form for the Control key on the keyboard'] }, "Ctrl"),
 		shiftKey: nls.localize({ key: 'shiftKey', comment: ['This is the short form for the Shift key on the keyboard'] }, "Shift"),
 		altKey: nls.localize({ key: 'altKey', comment: ['This is the short form for the Alt key on the keyboard'] }, "Alt"),
@@ -75,6 +75,21 @@ export const UILabelProvider = new ModifierLabelProvider(
 		separator: '+',
 	}
 );
+
+/**
+ * The keys that make the modifiers on air/OS (Haiku), where the engine gives
+ * the page Haiku's Command key (the Alt key) as Control, its Control key as
+ * Alt and its Option key (the Windows key) as Meta.
+ */
+function haikuModifierLabels(): ModifierLabels {
+	return {
+		ctrlKey: nls.localize({ key: 'haikuCommandKey', comment: ['This is the short form for the key that is Command on Haiku, labelled Alt on the keyboard'] }, "Alt"),
+		shiftKey: nls.localize({ key: 'shiftKey', comment: ['This is the short form for the Shift key on the keyboard'] }, "Shift"),
+		altKey: nls.localize({ key: 'haikuControlKey', comment: ['This is the short form for the key that is Control on Haiku, labelled Ctrl on the keyboard'] }, "Ctrl"),
+		metaKey: nls.localize({ key: 'haikuOptionKey', comment: ['This is the short form for the Option key on Haiku'] }, "Opt"),
+		separator: '+',
+	};
+}
 
 /**
  * A label provider that prints modifiers in a suitable format for ARIA.
