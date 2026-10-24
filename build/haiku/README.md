@@ -34,6 +34,8 @@ On Haiku, in the stage (gcc, make, python3, `nodejs22_devel` and `devel:libuv` i
 
 `package.sh` makes the launcher from the installed `aurora` package's `aurora-host` (or `AURORA_HOST_BINARY`). Raise `REVISION` in it for a new package of the same version. The package needs `aurora` 0.3 or later (utility processes and message ports) and HaikuPorts' `nodejs22`.
 
+For arm64 (the ROCK 5 ITX, the Cubie A7S, the Dragon Q8B), which has no compiler of its own, the same stage serves: its JavaScript does not depend on the architecture. On Linux, `build/haiku/cross-arm64.sh [stage] [output directory]` cross-builds the native modules with node-gyp against a Node.js 22 tree configured for arm64 Haiku (air/OS CI's `nodejs22` work tree, `NODE_SOURCE`), using an air/OS arm64 cross SDK, and makes `code_oss-<version>-<revision>-arm64.hpkg` with a Haiku build's host tools (`HAIKU_HOST_TOOLS`, `HAIKU_MIME_DB`) and the arm64 `aurora-host` (`AURORA_HOST_BINARY`). It requires `aurora` and air/OS's `nodejs22`; arm64 has no `ripgrep` or `git` packages, so search and Git need them installed separately. On the Dragon Q8B the workbench and the integrated terminal work.
+
 ## Webviews
 
 The engine has no service workers for the `vscode-webview` scheme, which webviews use to load an extension's resources. On Haiku the webview's host page (`src/vs/workbench/contrib/webview/browser/pre/index.html`) loads them itself, with the same `load-resource` messages, and gives the content `blob:` URLs: in its elements and style sheets, in elements it adds later, and through `fetch()`. Markdown previews and most extension webviews work that way; JavaScript modules that import other files of the extension, and workers started from them, do not.
