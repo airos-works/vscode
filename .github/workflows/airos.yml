@@ -1,0 +1,20 @@
+# air/OS: builds the code_oss packages (x86_64 and arm64) on every push to the haiku branch and
+# publishes them to the rolling "latest" release; the image builds take them from the package
+# pool. The pipeline lives in jmgasper/airos-ci (apps/build-app-packages.sh, build_code_oss) and
+# uses the pool's Aurora package for the launcher.
+name: air/OS build
+
+on:
+  push:
+    branches: [haiku]
+  workflow_dispatch:
+
+jobs:
+  airos:
+    uses: jmgasper/airos-ci/.github/workflows/app.yml@main
+    with:
+      app: code_oss
+      repo-dir: vscode
+      publish-branch: haiku
+    permissions:
+      contents: write

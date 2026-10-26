@@ -14,7 +14,7 @@ OUT=${1:?output directory}
 VERSION=$(cat "$STAGE/VERSION")
 # The package's revision: raise it for a new package of the same version
 # (pkgman does not replace an installed package with an equal version).
-REVISION=1
+REVISION=3
 ARCH=$(uname -m)
 HOST_BINARY=${AURORA_HOST_BINARY:-/boot/system/data/aurora/aurora-host}
 NAME="Code - OSS"

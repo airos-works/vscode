@@ -2,34 +2,44 @@
 #
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License. See License.txt in the project root for license information.
-# Makes the arm64 code_oss package on Linux from a stage that build.sh made:
-#   build/haiku/cross-arm64.sh [stage directory] [output directory]
-# The app's JavaScript is the same on both architectures; only the native
-# modules differ. arm64 air/OS has no compiler of its own, so this does what
-# native.sh and package.sh do on Haiku with cross tools:
-#   AIROS_SDK          an air/OS arm64 cross SDK's env.sh (CROSS, SYSROOT),
-#                      default /data1/airos/sdk/arm64/env.sh
-#   NODE_SOURCE        a Node.js 22 tree configured for arm64 Haiku (air/OS
-#                      CI's deps/recipes/nodejs22.sh work tree): node-gyp's
-#                      headers and common.gypi
+# Makes the code_oss package for x86_64 or arm64 on Linux from a stage that
+# build.sh made:
+#   build/haiku/cross.sh ARCH [stage directory] [output directory]
+# The app's JavaScript is the same on every architecture; only the native
+# modules differ. This does what native.sh and package.sh do on Haiku, with
+# cross tools (arm64 air/OS has no compiler of its own; air/OS CI builds both
+# architectures this way):
+#   AIROS_SDK          an air/OS cross SDK's env.sh for ARCH (CROSS, SYSROOT),
+#                      default /data1/airos/sdk/ARCH/env.sh
+#   NODE_SOURCE        a Node.js 22 tree or headers tarball directory
+#                      (node-v22.x-headers): node-gyp's include/node and
+#                      common.gypi
 #   HAIKU_HOST_TOOLS   a Haiku build's host tools (rc, xres, resattr, mimeset,
 #                      package) and HAIKU_MIME_DB its MIME database; the
 #                      tools keep attributes in that build's own store
-#   AURORA_HOST_BINARY the arm64 aurora-host, Aurora's build-arm64/aurora-host
-# The package requires aurora, and cmd:node from air/OS's nodejs22: arm64 has
-# no ripgrep or git packages, so search and Git need them installed by hand.
+#   AURORA_HOST_BINARY aurora-host for ARCH (the aurora package's
+#                      data/aurora/aurora-host)
+# The package requires aurora and cmd:node 22. x86_64 also requires ripgrep
+# and git (HaikuPorts); arm64 has no packages of them, so there search and Git
+# need them installed by hand.
 set -euo pipefail
+ARCH=${1:?usage: cross.sh x86_64|arm64 [stage directory] [output directory]}
+case $ARCH in
+	arm64) GYP_ARCH=arm64 EXTRA_REQUIRES="" ;;
+	x86_64) GYP_ARCH=x64 EXTRA_REQUIRES=$'\tcmd:rg\n\tcmd:git\n' ;;
+	*) echo "unknown architecture $ARCH" >&2; exit 1 ;;
+esac
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-STAGE=$(cd -- "${1:-$(dirname "$ROOT")/VSCode-haiku-stage}" && pwd)
-OUT=${2:-$STAGE/packages}
-AIROS_SDK=${AIROS_SDK:-/data1/airos/sdk/arm64/env.sh}
-NODE_SOURCE=${NODE_SOURCE:?a Node.js 22 tree configured for arm64 Haiku}
+STAGE=$(cd -- "${2:-$(dirname "$ROOT")/VSCode-haiku-stage}" && pwd)
+OUT=${3:-$STAGE/packages}
+# (the SDK's env.sh first: it names its own build's TOOLS and MIMEDB)
+. "${AIROS_SDK:-/data1/airos/sdk/$ARCH/env.sh}"
+NODE_SOURCE=${NODE_SOURCE:?a Node.js 22 tree or headers directory}
 TOOLS=${HAIKU_HOST_TOOLS:?a Haiku build's objects/linux/x86_64/release/tools}
 MIMEDB=${HAIKU_MIME_DB:?a Haiku build's objects/common/data/mime_db/mime_db}
-HOST_BINARY=${AURORA_HOST_BINARY:?the arm64 aurora-host}
-. "$AIROS_SDK"
+HOST_BINARY=${AURORA_HOST_BINARY:?aurora-host for ARCH}
 GYP=${GYP:-$(dirname "$(readlink -f "$(command -v npm)")")/../node_modules/node-gyp/bin/node-gyp.js}
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/code-oss-arm64.XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/code-oss-$ARCH.XXXXXX")
 trap '"$TOOLS/rm_attrs" -rf "$WORK" 2>/dev/null || rm -rf "$WORK"' EXIT
 
 echo "== Native modules"
@@ -47,7 +57,7 @@ MODULES=(@vscode/sqlite3/build/Release/vscode-sqlite3 @vscode/spdlog/build/Relea
 for module in "${MODULES[@]}"; do
 	directory=$WORK/node_modules/${module%%/build/*}
 	echo "${module%%/build/*}"
-	(cd "$directory" && node "$GYP" rebuild --nodedir="$NODE_SOURCE" --arch=arm64 -j "$(nproc)" \
+	(cd "$directory" && node "$GYP" rebuild --nodedir="$NODE_SOURCE" --arch=$GYP_ARCH -j "$(nproc)" \
 		-- -DOS=haiku -Dhost_os=linux -Dhaiku=1 > build.log 2>&1) || {
 		tail -30 "$directory/build.log"
 		exit 1
@@ -57,7 +67,7 @@ done
 echo "== App"
 VERSION=$(cat "$STAGE/VERSION")
 # raise it for a new package of the same version
-REVISION=1
+REVISION=3
 NAME="Code - OSS"
 PKG=$WORK/package
 APP=$PKG/apps/CodeOSS
@@ -88,7 +98,7 @@ cp "$STAGE/LICENSE" "$PKG/data/licenses/Code - OSS"
 cat > "$PKG/.PackageInfo" <<INFO
 name			code_oss
 version			$VERSION-$REVISION
-architecture	arm64
+architecture	$ARCH
 summary			"Code - OSS, the open source build of Visual Studio Code"
 description		"Code - OSS is the open source build of Visual Studio Code: a code \\
 editor with debugging, Git, an integrated terminal, search and extensions. \\
@@ -108,10 +118,10 @@ requires {
 	haiku
 	aurora >= 0.3
 	cmd:node >= 22
-}
+${EXTRA_REQUIRES}}
 INFO
 mkdir -p "$OUT"
-FILE=$OUT/code_oss-$VERSION-$REVISION-arm64.hpkg
+FILE=$OUT/code_oss-$VERSION-$REVISION-$ARCH.hpkg
 rm -f "$FILE"
 "$TOOLS/package/package" create -q -C "$PKG" "$FILE"
 echo "$FILE"
