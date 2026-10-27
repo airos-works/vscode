@@ -4,6 +4,19 @@
 
 > **This fork's `haiku` branch** builds Code - OSS for air/OS (Haiku), where it runs on [Aurora](https://github.com/jmgasper/aurora). It is an unofficial port: see [build/haiku/README.md](build/haiku/README.md).
 
+<!-- airos-ci:latest-builds:start -->
+## Latest builds
+
+Built automatically by air/OS CI from commit `226b01b` on 2026-10-27 ([all files](https://github.com/jmgasper/vscode/releases/tag/latest)).
+
+| Architecture | Package |
+|---|---|
+| arm64 | [code_oss-1.142.0-3-arm64.hpkg](https://github.com/airos-works/vscode/releases/download/latest/code_oss-1.142.0-3-arm64.hpkg) |
+| x86_64 | [code_oss-1.142.0-3-x86_64.hpkg](https://github.com/airos-works/vscode/releases/download/latest/code_oss-1.142.0-3-x86_64.hpkg) |
+
+Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60207-2054-g18abf2934f, arm64 hrev60207-2054-g18abf2934f.
+<!-- airos-ci:latest-builds:end -->
+
 ## The Repository
 
 This repository ("`Code - OSS`") is where we (Microsoft) develop the [Visual Studio Code](https://code.visualstudio.com) product together with the community. Not only do we work on code and issues here, but we also publish our [roadmap](https://github.com/microsoft/vscode/wiki/Roadmap), [monthly iteration plans](https://github.com/microsoft/vscode/wiki/Iteration-Plans), and our [endgame plans](https://github.com/microsoft/vscode/wiki/Running-the-Endgame). This source code is available to everyone under the standard [MIT license](https://github.com/microsoft/vscode/blob/main/LICENSE.txt).
