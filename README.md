@@ -7,14 +7,14 @@
 <!-- airos-ci:latest-builds:start -->
 ## Latest builds
 
-Built automatically by air/OS CI from commit `e22196b` on 2026-10-28 ([all files](https://github.com/airos-works/vscode/releases/tag/latest)).
+Built automatically by air/OS CI from commit `013b541` on 2026-10-29 ([all files](https://github.com/airos-works/vscode/releases/tag/latest)).
 
 | Architecture | Package |
 |---|---|
-| arm64 | [code_oss-1.142.0-3-arm64.hpkg](https://github.com/airos-works/vscode/releases/download/latest/code_oss-1.142.0-3-arm64.hpkg) |
-| x86_64 | [code_oss-1.142.0-3-x86_64.hpkg](https://github.com/airos-works/vscode/releases/download/latest/code_oss-1.142.0-3-x86_64.hpkg) |
+| arm64 | [code_oss-1.142.0-4-arm64.hpkg](https://github.com/airos-works/vscode/releases/download/latest/code_oss-1.142.0-4-arm64.hpkg) |
+| x86_64 | [code_oss-1.142.0-4-x86_64.hpkg](https://github.com/airos-works/vscode/releases/download/latest/code_oss-1.142.0-4-x86_64.hpkg) |
 
-Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60207-2078-gd744fdba2f, arm64 hrev60207-2080-gdfe67e6ac3.
+Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60207-2106-gf8eac33d0a, arm64 hrev60207-2108-g3fb3a0db12.
 <!-- airos-ci:latest-builds:end -->
 
 ## The Repository
