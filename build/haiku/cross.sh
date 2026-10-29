@@ -67,11 +67,11 @@ done
 echo "== App"
 VERSION=$(cat "$STAGE/VERSION")
 # raise it for a new package of the same version
-REVISION=3
+REVISION=4
 NAME="Code - OSS"
 PKG=$WORK/package
 APP=$PKG/apps/CodeOSS
-mkdir -p "$APP" "$PKG/bin" "$PKG/data/deskbar/menu/Applications" "$PKG/data/licenses"
+mkdir -p "$APP" "$PKG/bin" "$PKG/data/deskbar/menu/Developer" "$PKG/data/licenses"
 cp -a "$STAGE/app" "$APP/app"
 cp "$STAGE/aurora.json" "$APP/aurora.json"
 for module in "${MODULES[@]}"; do
@@ -93,7 +93,7 @@ cp "$HOST_BINARY" "$APP/$NAME"
 # on Haiku xres and mimeset give the file its attributes; here resattr does
 "$TOOLS/resattr/resattr" -O -o "$APP/$NAME" "$WORK/launcher.rsrc"
 (cd "$PKG" && "$TOOLS/mimeset" --all -f --mimedb "$MIMEDB" "apps/CodeOSS/$NAME")
-ln -s "../../../../apps/CodeOSS/$NAME" "$PKG/data/deskbar/menu/Applications/$NAME"
+ln -s "../../../../apps/CodeOSS/$NAME" "$PKG/data/deskbar/menu/Developer/$NAME"
 cp "$STAGE/LICENSE" "$PKG/data/licenses/Code - OSS"
 cat > "$PKG/.PackageInfo" <<INFO
 name			code_oss

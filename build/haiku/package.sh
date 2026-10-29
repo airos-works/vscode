@@ -14,7 +14,7 @@ OUT=${1:?output directory}
 VERSION=$(cat "$STAGE/VERSION")
 # The package's revision: raise it for a new package of the same version
 # (pkgman does not replace an installed package with an equal version).
-REVISION=3
+REVISION=4
 ARCH=$(uname -m)
 HOST_BINARY=${AURORA_HOST_BINARY:-/boot/system/data/aurora/aurora-host}
 NAME="Code - OSS"
@@ -28,7 +28,7 @@ for module in @vscode/sqlite3/build/Release/vscode-sqlite3 @vscode/spdlog/build/
 	[ -f "$STAGE/app/node_modules/$module.node" ] || { echo "No $module.node: run native.sh first" >&2; exit 1; }
 done
 
-mkdir -p "$APP" "$PKG/bin" "$PKG/data/deskbar/menu/Applications" "$PKG/data/licenses"
+mkdir -p "$APP" "$PKG/bin" "$PKG/data/deskbar/menu/Developer" "$PKG/data/licenses"
 cp -a "$STAGE/app" "$APP/app"
 cp "$STAGE/aurora.json" "$APP/aurora.json"
 
@@ -48,7 +48,7 @@ strip --strip-debug "$APP/$NAME"
 rc -I "$STAGE" -o "$WORK/launcher.rsrc" "$STAGE/CodeOSS.rdef"
 xres -o "$APP/$NAME" "$WORK/launcher.rsrc"
 mimeset -f "$APP/$NAME"
-ln -s "../../../../apps/CodeOSS/$NAME" "$PKG/data/deskbar/menu/Applications/$NAME"
+ln -s "../../../../apps/CodeOSS/$NAME" "$PKG/data/deskbar/menu/Developer/$NAME"
 cp "$STAGE/LICENSE" "$PKG/data/licenses/Code - OSS"
 
 cat > "$PKG/.PackageInfo" <<INFO
